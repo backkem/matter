@@ -239,46 +239,51 @@ func (r *ReceptionState) MaxCounter() uint32 {
 // CheckUnencrypted checks an unencrypted message counter.
 // Per Spec 4.6.5.3, unencrypted messages use more relaxed duplicate detection.
 // Messages behind the window are accepted (may be from a rebooted node).
+// Unencrypted messages use rollover-aware (signed 32-bit) comparison.
 func (r *ReceptionState) CheckUnencrypted(counter uint32) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Counter equal to max or in window with bit set = duplicate
-	if counter == r.maxCounter {
+	// Handle first message on uninitialized state
+	if !r.initialized {
+		r.maxCounter = counter
+		r.bitmap = 0
+		r.initialized = true
+		return true
+	}
+
+	// Use signed 32-bit comparison to handle rollover
+	diff := int32(counter - r.maxCounter)
+
+	// Counter equal to max = duplicate
+	if diff == 0 {
 		return false
 	}
 
-	// Check if in window
-	if r.maxCounter >= CounterWindowSize {
-		windowStart := r.maxCounter - CounterWindowSize
-		if counter >= windowStart && counter < r.maxCounter {
-			offset := r.maxCounter - counter - 1
-			mask := uint32(1) << offset
-			if r.bitmap&mask != 0 {
-				return false
-			}
-		}
-	} else if counter < r.maxCounter {
-		offset := r.maxCounter - counter - 1
-		if offset < CounterWindowSize {
-			mask := uint32(1) << offset
-			if r.bitmap&mask != 0 {
-				return false
-			}
-		}
-	}
-
-	// Accept and update
-	if counter > r.maxCounter {
+	// Counter is ahead of max (new message)
+	if diff > 0 {
 		r.advanceWindow(counter)
-	} else {
-		// Counter behind window - still accept but mark in bitmap if possible
-		if r.maxCounter-counter <= CounterWindowSize {
-			offset := r.maxCounter - counter - 1
-			r.bitmap |= uint32(1) << offset
-		}
+		return true
 	}
 
+	// Counter is behind max - check if in window
+	// diff is negative here, so -diff gives distance behind
+	behind := uint32(-diff)
+
+	if behind <= CounterWindowSize {
+		offset := behind - 1
+		mask := uint32(1) << offset
+		if r.bitmap&mask != 0 {
+			// Already received - reject duplicate
+			return false
+		}
+		// Accept and mark as received
+		r.bitmap |= mask
+		return true
+	}
+
+	// Counter is behind window - for unencrypted, we accept these
+	// (may be from a rebooted node with reset counter)
 	return true
 }
 
@@ -306,6 +311,15 @@ type SessionCounter struct {
 func NewSessionCounter() *SessionCounter {
 	return &SessionCounter{
 		MessageCounter: NewMessageCounter(),
+		exhausted:      false,
+	}
+}
+
+// NewSessionCounterWithValue creates a session counter with a specific initial value.
+// Used for testing or restoring persisted counters.
+func NewSessionCounterWithValue(initial uint32) *SessionCounter {
+	return &SessionCounter{
+		MessageCounter: NewMessageCounterWithValue(initial),
 		exhausted:      false,
 	}
 }
