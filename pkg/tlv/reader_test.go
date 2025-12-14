@@ -572,6 +572,120 @@ func TestReader_ExitContainer(t *testing.T) {
 	}
 }
 
+// TestReader_ExitContainerWithSiblings tests that after exiting a nested container,
+// we can correctly read sibling elements that follow. This tests the fix for a bug
+// where ExitContainer would consume too many elements when the user had already
+// iterated to the EndOfContainer marker.
+func TestReader_ExitContainerWithSiblings(t *testing.T) {
+	// Create: {1 = 1111, 2 = {1 = 2222}, 3 = 3333}
+	// The key scenario: after entering and exiting the nested struct (tag 2),
+	// we should be able to read the sibling element (tag 3).
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	if err := w.StartStructure(Anonymous()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.PutUint(ContextTag(1), 1111); err != nil {
+		t.Fatal(err)
+	}
+	// Nested struct
+	if err := w.StartStructure(ContextTag(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.PutUint(ContextTag(1), 2222); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.EndContainer(); err != nil {
+		t.Fatal(err)
+	}
+	// Sibling after nested struct
+	if err := w.PutUint(ContextTag(3), 3333); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.EndContainer(); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReader(bytes.NewReader(buf.Bytes()))
+
+	// Enter outer struct
+	if err := r.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.EnterContainer(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read first field (tag 1)
+	if err := r.Next(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := r.Uint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != 1111 {
+		t.Errorf("tag 1: expected 1111, got %d", v)
+	}
+
+	// Read nested struct (tag 2)
+	if err := r.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if r.Type() != ElementTypeStruct {
+		t.Fatalf("expected struct, got %v", r.Type())
+	}
+	if r.Tag().TagNumber() != 2 {
+		t.Fatalf("expected tag 2, got %d", r.Tag().TagNumber())
+	}
+
+	// Enter nested struct and iterate to end
+	if err := r.EnterContainer(); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if err := r.Next(); err != nil {
+			t.Fatalf("error iterating nested struct: %v", err)
+		}
+		if r.Type() == ElementTypeEnd {
+			break
+		}
+		// Skip values
+	}
+
+	// Exit nested struct - this is where the bug was
+	if err := r.ExitContainer(); err != nil {
+		t.Fatalf("ExitContainer failed: %v", err)
+	}
+
+	// Now read the sibling field (tag 3) - this would fail before the fix
+	if err := r.Next(); err != nil {
+		t.Fatalf("failed to read sibling after ExitContainer: %v", err)
+	}
+	if r.Type() == ElementTypeEnd {
+		t.Fatal("got EndOfContainer instead of sibling element")
+	}
+	if r.Tag().TagNumber() != 3 {
+		t.Fatalf("expected tag 3, got %d", r.Tag().TagNumber())
+	}
+	v, err = r.Uint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != 3333 {
+		t.Errorf("tag 3: expected 3333, got %d", v)
+	}
+
+	// Should now hit end of outer container
+	if err := r.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if r.Type() != ElementTypeEnd {
+		t.Errorf("expected EndOfContainer, got %v", r.Type())
+	}
+}
+
 func TestReader_ContainerDepth(t *testing.T) {
 	// Create nested structure: {0 = [1, 2]}
 	var buf bytes.Buffer

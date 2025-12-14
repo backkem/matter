@@ -327,6 +327,14 @@ func (r *Reader) ExitContainer() error {
 		return ErrNotInContainer
 	}
 
+	// If we're already positioned on the EndOfContainer marker for this container,
+	// just pop the stack and return.
+	if r.hasElement && r.elemType == ElementTypeEnd {
+		r.containerStack = r.containerStack[:len(r.containerStack)-1]
+		r.hasElement = false
+		return nil
+	}
+
 	// Skip remaining elements until end-of-container
 	depth := 1
 	for depth > 0 {
