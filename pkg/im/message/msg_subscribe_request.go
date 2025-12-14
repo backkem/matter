@@ -1,0 +1,284 @@
+package message
+
+import (
+	"io"
+
+	"github.com/backkem/matter/pkg/tlv"
+)
+
+// SubscribeRequestMessage requests a subscription for attribute and/or event data.
+// Spec: Section 10.7.4
+// Opcode: 0x03
+// Container type: Structure
+type SubscribeRequestMessage struct {
+	KeepSubscriptions     bool                  // Tag 0
+	MinIntervalFloor      uint16                // Tag 1
+	MaxIntervalCeiling    uint16                // Tag 2
+	AttributeRequests     []AttributePathIB     // Tag 3
+	EventRequests         []EventPathIB         // Tag 4
+	EventFilters          []EventFilterIB       // Tag 5
+	FabricFiltered        bool                  // Tag 7 (note: tag 6 is reserved/skipped)
+	DataVersionFilters    []DataVersionFilterIB // Tag 8
+}
+
+// Context tags for SubscribeRequestMessage.
+const (
+	subReqTagKeepSubscriptions     = 0
+	subReqTagMinIntervalFloor      = 1
+	subReqTagMaxIntervalCeiling    = 2
+	subReqTagAttributeRequests     = 3
+	subReqTagEventRequests         = 4
+	subReqTagEventFilters          = 5
+	subReqTagFabricFiltered        = 7 // Tag 6 is skipped/reserved
+	subReqTagDataVersionFilters    = 8
+)
+
+// Encode writes the SubscribeRequestMessage to the TLV writer.
+func (m *SubscribeRequestMessage) Encode(w *tlv.Writer) error {
+	if err := w.StartStructure(tlv.Anonymous()); err != nil {
+		return err
+	}
+
+	if err := w.PutBool(tlv.ContextTag(subReqTagKeepSubscriptions), m.KeepSubscriptions); err != nil {
+		return err
+	}
+
+	if err := w.PutUint(tlv.ContextTag(subReqTagMinIntervalFloor), uint64(m.MinIntervalFloor)); err != nil {
+		return err
+	}
+
+	if err := w.PutUint(tlv.ContextTag(subReqTagMaxIntervalCeiling), uint64(m.MaxIntervalCeiling)); err != nil {
+		return err
+	}
+
+	if len(m.AttributeRequests) > 0 {
+		if err := w.StartArray(tlv.ContextTag(subReqTagAttributeRequests)); err != nil {
+			return err
+		}
+		for i := range m.AttributeRequests {
+			if err := m.AttributeRequests[i].EncodeWithTag(w, tlv.Anonymous()); err != nil {
+				return err
+			}
+		}
+		if err := w.EndContainer(); err != nil {
+			return err
+		}
+	}
+
+	if len(m.EventRequests) > 0 {
+		if err := w.StartArray(tlv.ContextTag(subReqTagEventRequests)); err != nil {
+			return err
+		}
+		for i := range m.EventRequests {
+			if err := m.EventRequests[i].EncodeWithTag(w, tlv.Anonymous()); err != nil {
+				return err
+			}
+		}
+		if err := w.EndContainer(); err != nil {
+			return err
+		}
+	}
+
+	if len(m.EventFilters) > 0 {
+		if err := w.StartArray(tlv.ContextTag(subReqTagEventFilters)); err != nil {
+			return err
+		}
+		for i := range m.EventFilters {
+			if err := m.EventFilters[i].EncodeWithTag(w, tlv.Anonymous()); err != nil {
+				return err
+			}
+		}
+		if err := w.EndContainer(); err != nil {
+			return err
+		}
+	}
+
+	if err := w.PutBool(tlv.ContextTag(subReqTagFabricFiltered), m.FabricFiltered); err != nil {
+		return err
+	}
+
+	if len(m.DataVersionFilters) > 0 {
+		if err := w.StartArray(tlv.ContextTag(subReqTagDataVersionFilters)); err != nil {
+			return err
+		}
+		for i := range m.DataVersionFilters {
+			if err := m.DataVersionFilters[i].EncodeWithTag(w, tlv.Anonymous()); err != nil {
+				return err
+			}
+		}
+		if err := w.EndContainer(); err != nil {
+			return err
+		}
+	}
+
+	return w.EndContainer()
+}
+
+// Decode reads a SubscribeRequestMessage from the TLV reader.
+func (m *SubscribeRequestMessage) Decode(r *tlv.Reader) error {
+	if err := r.Next(); err != nil {
+		return err
+	}
+
+	if r.Type() != tlv.ElementTypeStruct {
+		return ErrInvalidType
+	}
+
+	if err := r.EnterContainer(); err != nil {
+		return err
+	}
+
+	for {
+		if err := r.Next(); err != nil {
+			if err == io.EOF || r.IsEndOfContainer() {
+				break
+			}
+			return err
+		}
+
+		if r.IsEndOfContainer() {
+			break
+		}
+
+		tag := r.Tag()
+		if !tag.IsContext() {
+			if err := r.Skip(); err != nil {
+				return err
+			}
+			continue
+		}
+
+		switch tag.TagNumber() {
+		case subReqTagKeepSubscriptions:
+			v, err := r.Bool()
+			if err != nil {
+				return err
+			}
+			m.KeepSubscriptions = v
+
+		case subReqTagMinIntervalFloor:
+			v, err := r.Uint()
+			if err != nil {
+				return err
+			}
+			m.MinIntervalFloor = uint16(v)
+
+		case subReqTagMaxIntervalCeiling:
+			v, err := r.Uint()
+			if err != nil {
+				return err
+			}
+			m.MaxIntervalCeiling = uint16(v)
+
+		case subReqTagAttributeRequests:
+			if err := r.EnterContainer(); err != nil {
+				return err
+			}
+			for {
+				if err := r.Next(); err != nil {
+					if err == io.EOF || r.IsEndOfContainer() {
+						break
+					}
+					return err
+				}
+				if r.IsEndOfContainer() {
+					break
+				}
+				var path AttributePathIB
+				if err := path.DecodeFrom(r); err != nil {
+					return err
+				}
+				m.AttributeRequests = append(m.AttributeRequests, path)
+			}
+			if err := r.ExitContainer(); err != nil {
+				return err
+			}
+
+		case subReqTagEventRequests:
+			if err := r.EnterContainer(); err != nil {
+				return err
+			}
+			for {
+				if err := r.Next(); err != nil {
+					if err == io.EOF || r.IsEndOfContainer() {
+						break
+					}
+					return err
+				}
+				if r.IsEndOfContainer() {
+					break
+				}
+				var path EventPathIB
+				if err := path.DecodeFrom(r); err != nil {
+					return err
+				}
+				m.EventRequests = append(m.EventRequests, path)
+			}
+			if err := r.ExitContainer(); err != nil {
+				return err
+			}
+
+		case subReqTagEventFilters:
+			if err := r.EnterContainer(); err != nil {
+				return err
+			}
+			for {
+				if err := r.Next(); err != nil {
+					if err == io.EOF || r.IsEndOfContainer() {
+						break
+					}
+					return err
+				}
+				if r.IsEndOfContainer() {
+					break
+				}
+				var filter EventFilterIB
+				if err := filter.DecodeFrom(r); err != nil {
+					return err
+				}
+				m.EventFilters = append(m.EventFilters, filter)
+			}
+			if err := r.ExitContainer(); err != nil {
+				return err
+			}
+
+		case subReqTagFabricFiltered:
+			v, err := r.Bool()
+			if err != nil {
+				return err
+			}
+			m.FabricFiltered = v
+
+		case subReqTagDataVersionFilters:
+			if err := r.EnterContainer(); err != nil {
+				return err
+			}
+			for {
+				if err := r.Next(); err != nil {
+					if err == io.EOF || r.IsEndOfContainer() {
+						break
+					}
+					return err
+				}
+				if r.IsEndOfContainer() {
+					break
+				}
+				var filter DataVersionFilterIB
+				if err := filter.DecodeFrom(r); err != nil {
+					return err
+				}
+				m.DataVersionFilters = append(m.DataVersionFilters, filter)
+			}
+			if err := r.ExitContainer(); err != nil {
+				return err
+			}
+
+		default:
+			if err := r.Skip(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return r.ExitContainer()
+}
