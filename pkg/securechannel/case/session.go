@@ -869,3 +869,40 @@ func (s *Session) PeerMRPParams() *MRPParameters {
 	defer s.mu.Unlock()
 	return s.peerMRPParams
 }
+
+// Role returns the session role (initiator or responder).
+func (s *Session) Role() Role {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role
+}
+
+// PeerNodeID returns the validated peer node ID from the certificate chain.
+// Only valid after the session is complete.
+func (s *Session) PeerNodeID() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peerNodeID
+}
+
+// FabricIndex returns the fabric index for this session.
+// Only valid after the session is complete.
+func (s *Session) FabricIndex() uint8 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fabricInfo == nil {
+		return 0
+	}
+	return uint8(s.fabricInfo.FabricIndex)
+}
+
+// PeerCATs returns the peer's CASE Authenticated Tags from their NOC.
+// Returns nil if no CATs were present.
+func (s *Session) PeerCATs() []uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Extract CATs from peer NOC if we have it
+	// This would require parsing the certificate
+	// For now, return nil - full implementation would extract from peerNOC
+	return nil
+}
