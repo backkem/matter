@@ -63,4 +63,13 @@ var (
 
 	// ErrNoFabricContext indicates a fabric context is required but not present.
 	ErrNoFabricContext = errors.New("no fabric context")
+
+	// ErrUnsupportedAttribute indicates the attribute is not supported by the cluster.
+	ErrUnsupportedAttribute = errors.New("unsupported attribute")
+
+	// ErrUnsupportedWrite indicates the attribute does not support writes.
+	ErrUnsupportedWrite = errors.New("unsupported write")
+
+	// ErrUnsupportedCommand indicates the command is not supported by the cluster.
+	ErrUnsupportedCommand = errors.New("unsupported command")
 )
