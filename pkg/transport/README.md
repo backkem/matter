@@ -63,6 +63,7 @@ err := mgr.Send(data, addr)
 ## Virtual Pipe for Testing
 
 In-memory transport for deterministic, flaky-free tests without real network I/O.
+Supports both UDP and TCP transports.
 
 ```
     Device                              Controller
@@ -71,12 +72,16 @@ In-memory transport for deterministic, flaky-free tests without real network I/O
        ▼                                    ▼
   PipeFactory ◄─────── Pipe ──────► PipeFactory
        │           (auto-process)           │
+       ├───────────────────────────────────►├
        ▼                                    ▼
-  PipePacketConn ◄── Queue 0→1 ──► PipePacketConn
+  PipePacketConn ◄── Queue 0→1 ──► PipePacketConn  (UDP)
                  ◄── Queue 1→0 ──►
+       │                                    │
+       ▼                                    ▼
+  PipeTCPListener ◄── Stream ────► PipeTCPConn     (TCP)
 ```
 
-### Basic Usage
+### Basic Usage (UDP)
 
 ```go
 // Create paired factories - messages flow automatically
@@ -87,6 +92,30 @@ defer deviceFactory.Pipe().Close()
 config := matter.NodeConfig{
     TransportFactory: deviceFactory,
 }
+```
+
+### TCP Usage
+
+```go
+f0, f1 := transport.NewPipeFactoryPair()
+defer f0.Pipe().Close()
+
+// Server side: create listener
+listener, _ := f0.CreateTCPListener(5540)
+defer listener.Close()
+
+// Client side: get connection
+clientConn := f1.GetTCPClientConn(5540)
+
+// Server accepts the connection
+serverConn, _ := listener.Accept()
+defer serverConn.Close()
+
+// Now clientConn and serverConn are connected via the pipe
+clientConn.Write([]byte("hello"))
+buf := make([]byte, 100)
+n, _ := serverConn.Read(buf)
+// buf[:n] == "hello"
 ```
 
 ### Network Simulation
@@ -109,6 +138,57 @@ f0, f1 := transport.NewPipeFactoryPairWithConfig(transport.PipeConfig{
 
 conn0.WriteTo(data, addr)
 f0.Pipe().Process() // manually deliver
+```
+
+## PipeManagerPair (Recommended for Testing)
+
+For most testing scenarios, use `NewPipeManagerPair()` instead of manually wiring pipes.
+It creates two fully connected Manager instances with minimal boilerplate.
+
+```go
+pair, _ := transport.NewPipeManagerPair(transport.PipeManagerConfig{
+    UDP: true,
+    TCP: true,
+    Handlers: [2]transport.MessageHandler{handler0, handler1},
+})
+defer pair.Close()
+
+// Send from manager 0 to manager 1
+pair.Manager(0).Send(data, pair.PeerAddresses(1).UDP)
+
+// Send from manager 1 to manager 0 over TCP
+pair.Manager(1).Send(data, pair.PeerAddresses(0).TCP)
+```
+
+### Protocol Isolation
+
+When testing specific protocols, disable the other to ensure test correctness:
+
+```go
+// UDP-only testing - TCP addresses will be invalid
+pair, _ := transport.NewPipeManagerPair(transport.PipeManagerConfig{
+    UDP:      true,
+    TCP:      false,
+    Handlers: [2]transport.MessageHandler{h0, h1},
+})
+
+peer := pair.PeerAddresses(1)
+peer.UDP.IsValid() // true
+peer.TCP.IsValid() // false - prevents accidental TCP usage
+```
+
+### Network Simulation with Manager Pairs
+
+```go
+pair, _ := transport.NewPipeManagerPair(transport.PipeManagerConfig{
+    UDP:      true,
+    Handlers: [2]transport.MessageHandler{h0, h1},
+})
+
+// Simulate 10% packet loss on UDP
+pair.Pipe().SetCondition(transport.NetworkCondition{
+    DropRate: 0.1,
+})
 ```
 
 ## Factory Interface

@@ -483,16 +483,237 @@ func TestPipe_Close(t *testing.T) {
 	}
 }
 
-func TestPipeFactory_TCPNotSupported(t *testing.T) {
+func TestPipeTCPListener_Basic(t *testing.T) {
+	f0, f1 := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	// Create listener on f0
+	listener, err := f0.CreateTCPListener(5540)
+	if err != nil {
+		t.Fatalf("CreateTCPListener: %v", err)
+	}
+	if listener == nil {
+		t.Fatal("CreateTCPListener returned nil")
+	}
+	defer listener.Close()
+
+	// Get client connection from f1
+	clientConn := f1.GetTCPClientConn(5540)
+	if clientConn == nil {
+		t.Fatal("GetTCPClientConn returned nil")
+	}
+
+	// Accept should return immediately (pipe connection already exists)
+	serverConn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer serverConn.Close()
+
+	// Verify addresses
+	if serverConn.LocalAddr().String() != "pipe:0:5540" {
+		t.Errorf("server LocalAddr = %q, want %q", serverConn.LocalAddr(), "pipe:0:5540")
+	}
+	if clientConn.LocalAddr().String() != "pipe:1:5540" {
+		t.Errorf("client LocalAddr = %q, want %q", clientConn.LocalAddr(), "pipe:1:5540")
+	}
+}
+
+func TestPipeTCPListener_DataTransfer(t *testing.T) {
+	f0, f1 := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	listener, _ := f0.CreateTCPListener(5540)
+	defer listener.Close()
+
+	clientConn := f1.GetTCPClientConn(5540)
+	serverConn, _ := listener.Accept()
+	defer serverConn.Close()
+
+	// Test client -> server
+	testData := []byte("hello from client")
+	done := make(chan error, 1)
+
+	go func() {
+		buf := make([]byte, 100)
+		n, err := serverConn.Read(buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(buf[:n]) != string(testData) {
+			done <- &testError{msg: "data mismatch"}
+			return
+		}
+		done <- nil
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	_, err := clientConn.Write(testData)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("server read error: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for server read")
+	}
+}
+
+func TestPipeTCPListener_Bidirectional(t *testing.T) {
+	f0, f1 := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	listener, _ := f0.CreateTCPListener(5540)
+	defer listener.Close()
+
+	clientConn := f1.GetTCPClientConn(5540)
+	serverConn, _ := listener.Accept()
+	defer serverConn.Close()
+
+	serverMsg := make(chan string, 1)
+	clientMsg := make(chan string, 1)
+
+	// Server reads
+	go func() {
+		buf := make([]byte, 100)
+		n, _ := serverConn.Read(buf)
+		serverMsg <- string(buf[:n])
+	}()
+
+	// Client reads
+	go func() {
+		buf := make([]byte, 100)
+		n, _ := clientConn.Read(buf)
+		clientMsg <- string(buf[:n])
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Write in both directions
+	clientConn.Write([]byte("from client"))
+	serverConn.Write([]byte("from server"))
+
+	select {
+	case msg := <-serverMsg:
+		if msg != "from client" {
+			t.Errorf("server got %q, want %q", msg, "from client")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for server message")
+	}
+
+	select {
+	case msg := <-clientMsg:
+		if msg != "from server" {
+			t.Errorf("client got %q, want %q", msg, "from server")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for client message")
+	}
+}
+
+func TestPipeTCPListener_AcceptOnce(t *testing.T) {
 	f0, _ := NewPipeFactoryPair()
 	defer f0.Pipe().Close()
 
-	listener, err := f0.CreateTCPListener(5540)
+	listener, _ := f0.CreateTCPListener(5540)
+	defer listener.Close()
+
+	// First accept should succeed
+	conn1, err := listener.Accept()
 	if err != nil {
-		t.Errorf("CreateTCPListener should not error: %v", err)
+		t.Fatalf("first Accept: %v", err)
 	}
-	if listener != nil {
-		t.Error("CreateTCPListener should return nil (not supported)")
+	defer conn1.Close()
+
+	// Second accept should block until close
+	done := make(chan error, 1)
+	go func() {
+		_, err := listener.Accept()
+		done <- err
+	}()
+
+	// Should not complete immediately
+	select {
+	case <-done:
+		t.Fatal("second Accept should block")
+	case <-time.After(50 * time.Millisecond):
+		// Expected - still blocking
+	}
+
+	// Close listener to unblock
+	listener.Close()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("second Accept should return error after Close")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("second Accept should unblock after Close")
+	}
+}
+
+func TestPipeTCPListener_AcceptAfterClose(t *testing.T) {
+	f0, _ := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	listener, _ := f0.CreateTCPListener(5540)
+	listener.Close()
+
+	// Accept on closed listener should return error immediately
+	_, err := listener.Accept()
+	if err == nil {
+		t.Error("Accept on closed listener should return error")
+	}
+}
+
+func TestPipeTCPListener_Addr(t *testing.T) {
+	f0, _ := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	listener, _ := f0.CreateTCPListener(5540)
+	defer listener.Close()
+
+	addr := listener.Addr()
+	if addr.Network() != "pipe" {
+		t.Errorf("Network() = %q, want %q", addr.Network(), "pipe")
+	}
+	if addr.String() != "pipe:0:5540" {
+		t.Errorf("String() = %q, want %q", addr.String(), "pipe:0:5540")
+	}
+}
+
+func TestPipeTCPConn_Interface(t *testing.T) {
+	f0, f1 := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	listener, _ := f0.CreateTCPListener(5540)
+	defer listener.Close()
+
+	clientConn := f1.GetTCPClientConn(5540)
+	serverConn, _ := listener.Accept()
+	defer serverConn.Close()
+
+	// Verify interfaces
+	var _ net.Conn = clientConn
+	var _ net.Conn = serverConn
+}
+
+func TestPipeTCPListener_ReusesListener(t *testing.T) {
+	f0, _ := NewPipeFactoryPair()
+	defer f0.Pipe().Close()
+
+	listener1, _ := f0.CreateTCPListener(5540)
+	listener2, _ := f0.CreateTCPListener(5540)
+
+	if listener1 != listener2 {
+		t.Error("CreateTCPListener should return the same listener on subsequent calls")
 	}
 }
 
@@ -526,5 +747,303 @@ func TestPipeConfig_Defaults(t *testing.T) {
 	}
 	if config.ProcessInterval != 1*time.Millisecond {
 		t.Errorf("ProcessInterval = %v, want 1ms", config.ProcessInterval)
+	}
+}
+
+// --- PipeManagerPair Tests ---
+
+func TestPipeManagerPair_UDP(t *testing.T) {
+	received := make(chan *ReceivedMessage, 2)
+	handler := func(msg *ReceivedMessage) {
+		received <- msg
+	}
+
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		UDP:      true,
+		TCP:      false,
+		Handlers: [2]MessageHandler{handler, handler},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+	defer pair.Close()
+
+	// Send from mgr0 to mgr1 via UDP
+	testData := []byte("hello via UDP")
+	peer1Addr := pair.PeerAddresses(1)
+
+	if !peer1Addr.UDP.IsValid() {
+		t.Fatal("UDP peer address should be valid")
+	}
+	if peer1Addr.TCP.IsValid() {
+		t.Fatal("TCP peer address should NOT be valid when TCP is disabled")
+	}
+
+	err = pair.Manager(0).Send(testData, peer1Addr.UDP)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case msg := <-received:
+		if string(msg.Data) != string(testData) {
+			t.Errorf("received %q, want %q", msg.Data, testData)
+		}
+		if msg.PeerAddr.TransportType != TransportTypeUDP {
+			t.Errorf("transport type = %v, want UDP", msg.PeerAddr.TransportType)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timeout waiting for message")
+	}
+}
+
+func TestPipeManagerPair_TCP(t *testing.T) {
+	received := make(chan *ReceivedMessage, 2)
+	handler := func(msg *ReceivedMessage) {
+		received <- msg
+	}
+
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		UDP:      false,
+		TCP:      true,
+		Handlers: [2]MessageHandler{handler, handler},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+	defer pair.Close()
+
+	// Send from mgr0 to mgr1 via TCP
+	testData := []byte("hello via TCP")
+	peer1Addr := pair.PeerAddresses(1)
+
+	if peer1Addr.UDP.IsValid() {
+		t.Fatal("UDP peer address should NOT be valid when UDP is disabled")
+	}
+	if !peer1Addr.TCP.IsValid() {
+		t.Fatal("TCP peer address should be valid")
+	}
+
+	err = pair.Manager(0).Send(testData, peer1Addr.TCP)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case msg := <-received:
+		if string(msg.Data) != string(testData) {
+			t.Errorf("received %q, want %q", msg.Data, testData)
+		}
+		if msg.PeerAddr.TransportType != TransportTypeTCP {
+			t.Errorf("transport type = %v, want TCP", msg.PeerAddr.TransportType)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timeout waiting for message")
+	}
+}
+
+func TestPipeManagerPair_Bidirectional(t *testing.T) {
+	received0 := make(chan *ReceivedMessage, 2)
+	received1 := make(chan *ReceivedMessage, 2)
+
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		UDP: true,
+		TCP: true,
+		Handlers: [2]MessageHandler{
+			func(msg *ReceivedMessage) { received0 <- msg },
+			func(msg *ReceivedMessage) { received1 <- msg },
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+	defer pair.Close()
+
+	// mgr0 -> mgr1 via UDP
+	pair.Manager(0).Send([]byte("0->1 UDP"), pair.PeerAddresses(1).UDP)
+
+	// mgr1 -> mgr0 via UDP
+	pair.Manager(1).Send([]byte("1->0 UDP"), pair.PeerAddresses(0).UDP)
+
+	// mgr0 -> mgr1 via TCP
+	pair.Manager(0).Send([]byte("0->1 TCP"), pair.PeerAddresses(1).TCP)
+
+	// mgr1 -> mgr0 via TCP
+	pair.Manager(1).Send([]byte("1->0 TCP"), pair.PeerAddresses(0).TCP)
+
+	// Collect messages
+	var msgs0, msgs1 []*ReceivedMessage
+	timeout := time.After(500 * time.Millisecond)
+
+	for len(msgs0) < 2 || len(msgs1) < 2 {
+		select {
+		case msg := <-received0:
+			msgs0 = append(msgs0, msg)
+		case msg := <-received1:
+			msgs1 = append(msgs1, msg)
+		case <-timeout:
+			t.Fatalf("timeout: got %d msgs at mgr0, %d at mgr1", len(msgs0), len(msgs1))
+		}
+	}
+
+	// Verify mgr0 received messages from mgr1
+	if len(msgs0) != 2 {
+		t.Errorf("mgr0 received %d messages, want 2", len(msgs0))
+	}
+
+	// Verify mgr1 received messages from mgr0
+	if len(msgs1) != 2 {
+		t.Errorf("mgr1 received %d messages, want 2", len(msgs1))
+	}
+}
+
+func TestPipeManagerPair_ProtocolIsolation(t *testing.T) {
+	// Test that UDP-only pair cannot accidentally use TCP
+	t.Run("UDP-only rejects TCP", func(t *testing.T) {
+		pair, err := NewPipeManagerPair(PipeManagerConfig{
+			UDP:      true,
+			TCP:      false,
+			Handlers: [2]MessageHandler{func(*ReceivedMessage) {}, func(*ReceivedMessage) {}},
+		})
+		if err != nil {
+			t.Fatalf("NewPipeManagerPair: %v", err)
+		}
+		defer pair.Close()
+
+		// PeerAddresses should return invalid TCP address
+		peer1 := pair.PeerAddresses(1)
+		if peer1.TCP.IsValid() {
+			t.Error("TCP address should be invalid when TCP is disabled")
+		}
+
+		// Attempting to use a constructed TCP address should fail
+		tcpAddr := NewTCPPeerAddress(PipeAddr{ID: 1, Port: 5540})
+		err = pair.Manager(0).Send([]byte("test"), tcpAddr)
+		if err == nil {
+			t.Error("Send via TCP should fail when TCP is disabled")
+		}
+	})
+
+	// Test that TCP-only pair cannot accidentally use UDP
+	t.Run("TCP-only rejects UDP", func(t *testing.T) {
+		pair, err := NewPipeManagerPair(PipeManagerConfig{
+			UDP:      false,
+			TCP:      true,
+			Handlers: [2]MessageHandler{func(*ReceivedMessage) {}, func(*ReceivedMessage) {}},
+		})
+		if err != nil {
+			t.Fatalf("NewPipeManagerPair: %v", err)
+		}
+		defer pair.Close()
+
+		// PeerAddresses should return invalid UDP address
+		peer1 := pair.PeerAddresses(1)
+		if peer1.UDP.IsValid() {
+			t.Error("UDP address should be invalid when UDP is disabled")
+		}
+
+		// Attempting to use a constructed UDP address should fail
+		udpAddr := NewUDPPeerAddress(PipeAddr{ID: 1, Port: 5540})
+		err = pair.Manager(0).Send([]byte("test"), udpAddr)
+		if err == nil {
+			t.Error("Send via UDP should fail when UDP is disabled")
+		}
+	})
+}
+
+func TestPipeManagerPair_Defaults(t *testing.T) {
+	// When neither UDP nor TCP is specified, both should be enabled
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		Handlers: [2]MessageHandler{func(*ReceivedMessage) {}, func(*ReceivedMessage) {}},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+	defer pair.Close()
+
+	peer1 := pair.PeerAddresses(1)
+	if !peer1.UDP.IsValid() {
+		t.Error("UDP should be enabled by default")
+	}
+	if !peer1.TCP.IsValid() {
+		t.Error("TCP should be enabled by default")
+	}
+}
+
+func TestPipeManagerPair_Close(t *testing.T) {
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		UDP:      true,
+		TCP:      true,
+		Handlers: [2]MessageHandler{func(*ReceivedMessage) {}, func(*ReceivedMessage) {}},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+
+	// Close should succeed (always returns nil, ignores already-closed errors)
+	pair.Close()
+
+	// Sending after close should fail
+	err = pair.Manager(0).Send([]byte("test"), pair.PeerAddresses(1).UDP)
+	if err == nil {
+		t.Error("Send after Close should fail")
+	}
+
+	// Double close should be safe
+	pair.Close()
+}
+
+func TestPipeManagerPair_PipeAccess(t *testing.T) {
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		UDP:      true,
+		TCP:      true,
+		Handlers: [2]MessageHandler{func(*ReceivedMessage) {}, func(*ReceivedMessage) {}},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+	defer pair.Close()
+
+	// Should be able to access pipes for configuration
+	if pair.Pipe() == nil {
+		t.Error("Pipe() should not be nil when UDP is enabled")
+	}
+	if pair.TCPPipe() == nil {
+		t.Error("TCPPipe() should not be nil when TCP is enabled")
+	}
+
+	// Can set network conditions
+	pair.Pipe().SetCondition(NetworkCondition{
+		DropRate: 0.5,
+	})
+	cond := pair.Pipe().Condition()
+	if cond.DropRate != 0.5 {
+		t.Errorf("DropRate = %v, want 0.5", cond.DropRate)
+	}
+}
+
+func TestPipeManagerPair_ManagerAccess(t *testing.T) {
+	pair, err := NewPipeManagerPair(PipeManagerConfig{
+		Handlers: [2]MessageHandler{func(*ReceivedMessage) {}, func(*ReceivedMessage) {}},
+	})
+	if err != nil {
+		t.Fatalf("NewPipeManagerPair: %v", err)
+	}
+	defer pair.Close()
+
+	// Valid indices
+	if pair.Manager(0) == nil {
+		t.Error("Manager(0) should not be nil")
+	}
+	if pair.Manager(1) == nil {
+		t.Error("Manager(1) should not be nil")
+	}
+
+	// Invalid indices
+	if pair.Manager(-1) != nil {
+		t.Error("Manager(-1) should be nil")
+	}
+	if pair.Manager(2) != nil {
+		t.Error("Manager(2) should be nil")
 	}
 }

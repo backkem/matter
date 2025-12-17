@@ -119,3 +119,66 @@ Initiator:                              Responder:
   │ Closed  │                           │ Closed  │
   └─────────┘                           └─────────┘
 ```
+
+## TestManagerPair for Testing
+
+Two connected exchange managers for E2E tests without real network I/O.
+
+```
+  Manager 0                              Manager 1
+  ─────────                              ─────────
+      │                                      │
+      ▼                                      ▼
+  NewExchange()                         ProtocolHandler
+      │                                      ▲
+      │ SendMessage()                        │ OnUnsolicited()
+      ▼                                      │
+  transport ──────► Pipe ──────► transport ──┘
+```
+
+### Basic Usage
+
+```go
+pair, _ := NewTestManagerPair(TestManagerPairConfig{})
+defer pair.Close()
+
+// Manager 0 sends to Manager 1
+ctx, _ := pair.Manager(0).NewExchange(
+    pair.Session(0), 0, pair.PeerAddress(1, false),
+    message.ProtocolSecureChannel, nil,
+)
+ctx.SendMessage(0x20, []byte("hello"), false)
+
+// Wait for Manager 1's handler to receive
+msg, ok := pair.WaitForMessage(1, time.Second)
+// msg.Opcode, msg.Payload, msg.Unsolicited
+```
+
+### TCP Transport
+
+```go
+pair, _ := NewTestManagerPair(TestManagerPairConfig{
+    UDP: false,
+    TCP: true,
+})
+defer pair.Close()
+
+ctx, _ := pair.Manager(0).NewExchange(
+    pair.Session(0), 0, pair.PeerAddress(1, true), // tcp=true
+    message.ProtocolSecureChannel, nil,
+)
+```
+
+### Bidirectional
+
+```go
+// 0 → 1
+ctx0, _ := pair.Manager(0).NewExchange(pair.Session(0), 0, pair.PeerAddress(1, false), ...)
+ctx0.SendMessage(0x01, []byte("ping"), false)
+msg1, _ := pair.WaitForMessage(1, time.Second)
+
+// 1 → 0
+ctx1, _ := pair.Manager(1).NewExchange(pair.Session(1), 0, pair.PeerAddress(0, false), ...)
+ctx1.SendMessage(0x02, []byte("pong"), false)
+msg0, _ := pair.WaitForMessage(0, time.Second)
+```
