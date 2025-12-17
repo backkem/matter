@@ -1,10 +1,13 @@
 package matter
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/backkem/matter/pkg/clusters/onoff"
 	"github.com/backkem/matter/pkg/fabric"
+	"github.com/backkem/matter/pkg/transport"
 )
 
 func TestNewNode(t *testing.T) {
@@ -361,44 +364,86 @@ func TestInvalidPasscodeConfig(t *testing.T) {
 	}
 }
 
-func TestPipeTransportFactory(t *testing.T) {
-	factory1, factory2 := NewPipeTransportPair()
+func TestPipeFactory(t *testing.T) {
+	factory1, factory2 := transport.NewPipeFactoryPair()
 
 	if factory1 == nil || factory2 == nil {
-		t.Fatal("NewPipeTransportPair returned nil")
+		t.Fatal("NewPipeFactoryPair returned nil")
 	}
 
-	// Create UDP conn (returns nil for pipe-based, which is expected)
-	conn, err := factory1.CreateUDPConn(5540)
+	// Both factories share the same pipe
+	if factory1.Pipe() != factory2.Pipe() {
+		t.Error("Factories should share the same pipe")
+	}
+
+	// Create UDP connections from both factories
+	conn1, err := factory1.CreateUDPConn(5540)
 	if err != nil {
-		t.Fatalf("CreateUDPConn failed: %v", err)
+		t.Fatalf("CreateUDPConn failed for factory1: %v", err)
 	}
-	// conn can be nil for pipe-based transport
-	_ = conn
+	if conn1 == nil {
+		t.Fatal("Expected non-nil connection from factory1")
+	}
 
-	// Create TCP listener (returns nil for pipe-based, which is expected)
+	conn2, err := factory2.CreateUDPConn(5540)
+	if err != nil {
+		t.Fatalf("CreateUDPConn failed for factory2: %v", err)
+	}
+	if conn2 == nil {
+		t.Fatal("Expected non-nil connection from factory2")
+	}
+
+	// Test message flow: factory1 -> factory2
+	testMsg := []byte("hello from conn1")
+	done := make(chan error, 1)
+
+	// Start reader on conn2
+	go func() {
+		buf := make([]byte, 1024)
+		n, addr, err := conn2.ReadFrom(buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if n != len(testMsg) {
+			done <- fmt.Errorf("expected %d bytes, got %d", len(testMsg), n)
+			return
+		}
+		if string(buf[:n]) != string(testMsg) {
+			done <- fmt.Errorf("message mismatch: %q vs %q", buf[:n], testMsg)
+			return
+		}
+		t.Logf("Received from %v: %s", addr, buf[:n])
+		done <- nil
+	}()
+
+	// Give reader time to block
+	time.Sleep(10 * time.Millisecond)
+
+	// Write from conn1 - auto-process delivers messages automatically!
+	_, err = conn1.WriteTo(testMsg, conn2.LocalAddr())
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	// Wait for reader
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Reader error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timeout waiting for message")
+	}
+
+	// TCP listener returns nil (not supported yet)
 	listener, err := factory1.CreateTCPListener(5540)
 	if err != nil {
 		t.Fatalf("CreateTCPListener failed: %v", err)
 	}
-	// listener can be nil for pipe-based transport
-	_ = listener
-}
-
-func TestTestNodeConfig(t *testing.T) {
-	config := TestNodeConfig()
-
-	// TestNodeConfig uses test vendor/product IDs
-	if config.VendorID != 0xFFF1 {
-		t.Errorf("expected VendorID 0xFFF1, got 0x%X", config.VendorID)
+	if listener != nil {
+		t.Error("Expected nil TCP listener (not supported)")
 	}
-	if config.ProductID != 0x8001 {
-		t.Errorf("expected ProductID 0x8001, got 0x%X", config.ProductID)
-	}
-	if config.Storage == nil {
-		t.Error("Storage should not be nil")
-	}
-	// TransportFactory is not set by TestNodeConfig (it's optional)
 }
 
 func TestNodeStateTransitions(t *testing.T) {

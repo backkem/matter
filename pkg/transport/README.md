@@ -60,4 +60,64 @@ addr := transport.NewUDPPeerAddress(remoteNetAddr)
 err := mgr.Send(data, addr)
 ```
 
+## Virtual Pipe for Testing
+
+In-memory transport for deterministic, flaky-free tests without real network I/O.
+
 ```
+    Device                              Controller
+    ──────                              ──────────
+       │                                    │
+       ▼                                    ▼
+  PipeFactory ◄─────── Pipe ──────► PipeFactory
+       │           (auto-process)           │
+       ▼                                    ▼
+  PipePacketConn ◄── Queue 0→1 ──► PipePacketConn
+                 ◄── Queue 1→0 ──►
+```
+
+### Basic Usage
+
+```go
+// Create paired factories - messages flow automatically
+deviceFactory, controllerFactory := transport.NewPipeFactoryPair()
+defer deviceFactory.Pipe().Close()
+
+// Use in NodeConfig
+config := matter.NodeConfig{
+    TransportFactory: deviceFactory,
+}
+```
+
+### Network Simulation
+
+```go
+deviceFactory.SetCondition(transport.NetworkCondition{
+    DropRate:      0.1,                   // 10% packet loss
+    DelayMin:      10 * time.Millisecond,
+    DelayMax:      50 * time.Millisecond,
+    DuplicateRate: 0.05,                  // 5% duplicates
+})
+```
+
+### Manual Processing (Deterministic Tests)
+
+```go
+f0, f1 := transport.NewPipeFactoryPairWithConfig(transport.PipeConfig{
+    AutoProcess: false,
+})
+
+conn0.WriteTo(data, addr)
+f0.Pipe().Process() // manually deliver
+```
+
+## Factory Interface
+
+```go
+type Factory interface {
+    CreateUDPConn(port int) (net.PacketConn, error)
+    CreateTCPListener(port int) (net.Listener, error)
+}
+```
+
+When `NodeConfig.TransportFactory` is nil, real OS sockets are used.

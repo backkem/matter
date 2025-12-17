@@ -74,25 +74,25 @@ func TestManager_PASEHandshake_ManagerToManager(t *testing.T) {
 	}
 
 	// Step 3: Initiator handles PBKDFParamResponse via Manager.Route
-	pake1, err := initiatorMgr.Route(exchangeID, OpcodePBKDFParamResponse, pbkdfResp)
+	pake1Msg, err := initiatorMgr.Route(exchangeID, &Message{Opcode: OpcodePBKDFParamResponse, Payload: pbkdfResp})
 	if err != nil {
 		t.Fatalf("Route PBKDFParamResponse failed: %v", err)
 	}
 
 	// Step 4: Responder handles Pake1
-	pake2, err := responderPASE.HandlePake1(pake1)
+	pake2, err := responderPASE.HandlePake1(pake1Msg.Payload)
 	if err != nil {
 		t.Fatalf("HandlePake1 failed: %v", err)
 	}
 
 	// Step 5: Initiator handles Pake2 via Manager.Route
-	pake3, err := initiatorMgr.Route(exchangeID, OpcodePASEPake2, pake2)
+	pake3Msg, err := initiatorMgr.Route(exchangeID, &Message{Opcode: OpcodePASEPake2, Payload: pake2})
 	if err != nil {
 		t.Fatalf("Route Pake2 failed: %v", err)
 	}
 
 	// Step 6: Responder handles Pake3
-	_, success, err := responderPASE.HandlePake3(pake3)
+	_, success, err := responderPASE.HandlePake3(pake3Msg.Payload)
 	if err != nil {
 		t.Fatalf("HandlePake3 failed: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestManager_PASEHandshake_ManagerToManager(t *testing.T) {
 	// Step 7: Initiator handles StatusReport via Manager.Route
 	// HandlePake3 returns nil for statusBytes - caller encodes success status
 	successStatus := Success().Encode()
-	_, err = initiatorMgr.Route(exchangeID, OpcodeStatusReport, successStatus)
+	_, err = initiatorMgr.Route(exchangeID, &Message{Opcode: OpcodeStatusReport, Payload: successStatus})
 	if err != nil {
 		t.Fatalf("Route StatusReport failed: %v", err)
 	}
@@ -235,20 +235,20 @@ func TestManager_CASEHandshake_ManagerToManager(t *testing.T) {
 	}
 
 	// Step 3: Initiator handles Sigma2 via Manager.Route
-	sigma3, err := initiatorMgr.Route(exchangeID, OpcodeCASESigma2, sigma2)
+	sigma3Msg, err := initiatorMgr.Route(exchangeID, &Message{Opcode: OpcodeCASESigma2, Payload: sigma2})
 	if err != nil {
 		t.Fatalf("Route Sigma2 failed: %v", err)
 	}
 
 	// Step 4: Responder handles Sigma3
-	err = responderCASE.HandleSigma3(sigma3)
+	err = responderCASE.HandleSigma3(sigma3Msg.Payload)
 	if err != nil {
 		t.Fatalf("HandleSigma3 failed: %v", err)
 	}
 
 	// Step 5: Send success status to initiator
 	successStatus := Success().Encode()
-	_, err = initiatorMgr.Route(exchangeID, OpcodeStatusReport, successStatus)
+	_, err = initiatorMgr.Route(exchangeID, &Message{Opcode: OpcodeStatusReport, Payload: successStatus})
 	if err != nil {
 		t.Fatalf("Route StatusReport failed: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestManager_BusyResponse(t *testing.T) {
 
 	// Responder sends Busy
 	busyStatus := Busy(5000)
-	_, err = mgr.Route(exchangeID, OpcodeStatusReport, busyStatus.Encode())
+	_, err = mgr.Route(exchangeID, &Message{Opcode: OpcodeStatusReport, Payload: busyStatus.Encode()})
 	if err != nil {
 		t.Fatalf("Route Busy failed: %v", err)
 	}

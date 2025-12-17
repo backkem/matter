@@ -38,6 +38,21 @@ var (
 	ErrSessionClosed       = errors.New("securechannel: session closed by peer")
 )
 
+// Message represents a secure channel protocol message (request or response).
+// It pairs an opcode with its payload for symmetric handling.
+type Message struct {
+	Opcode  Opcode
+	Payload []byte
+}
+
+// NewMessage creates a new Message. Returns nil if payload is nil.
+func NewMessage(opcode Opcode, payload []byte) *Message {
+	if payload == nil {
+		return nil
+	}
+	return &Message{Opcode: opcode, Payload: payload}
+}
+
 // HandshakeType indicates the type of secure session being established.
 type HandshakeType int
 
@@ -107,12 +122,22 @@ type handshakeContext struct {
 	pinnedSessionID uint16 // Pre-allocated session ID to prevent eviction
 }
 
+// paseResponderConfig holds PASE responder configuration.
+type paseResponderConfig struct {
+	verifier   *pase.Verifier
+	salt       []byte
+	iterations uint32
+}
+
 // Manager coordinates secure channel protocol operations.
 type Manager struct {
 	config ManagerConfig
 
 	// Active handshakes keyed by exchange ID
 	handshakes map[uint16]*handshakeContext
+
+	// PASE responder configuration (set when commissioning window is open)
+	paseResponder *paseResponderConfig
 
 	mu sync.RWMutex
 }
@@ -161,20 +186,23 @@ func IsCASEOpcode(opcode Opcode) bool {
 }
 
 // Route dispatches an incoming message to the appropriate handler.
-// Returns the response bytes (if any) and an error.
-func (m *Manager) Route(exchangeID uint16, opcode Opcode, payload []byte) ([]byte, error) {
-	if !MessagePermitted(opcode) {
+// Returns the response message (opcode + payload) if any, and an error.
+func (m *Manager) Route(exchangeID uint16, msg *Message) (*Message, error) {
+	if msg == nil {
+		return nil, ErrInvalidOpcode
+	}
+	if !MessagePermitted(msg.Opcode) {
 		return nil, ErrInvalidOpcode
 	}
 
 	switch {
-	case IsPASEOpcode(opcode):
-		return m.handlePASE(exchangeID, opcode, payload)
-	case IsCASEOpcode(opcode):
-		return m.handleCASE(exchangeID, opcode, payload)
-	case opcode == OpcodeStatusReport:
-		return m.handleStatusReport(exchangeID, payload)
-	case opcode == OpcodeStandaloneAck:
+	case IsPASEOpcode(msg.Opcode):
+		return m.handlePASE(exchangeID, msg.Opcode, msg.Payload)
+	case IsCASEOpcode(msg.Opcode):
+		return m.handleCASE(exchangeID, msg.Opcode, msg.Payload)
+	case msg.Opcode == OpcodeStatusReport:
+		return m.handleStatusReport(exchangeID, msg.Payload)
+	case msg.Opcode == OpcodeStandaloneAck:
 		// Standalone ACK - no response needed, handled by MRP layer
 		return nil, nil
 	default:
@@ -183,7 +211,23 @@ func (m *Manager) Route(exchangeID uint16, opcode Opcode, payload []byte) ([]byt
 }
 
 // handlePASE routes PASE protocol messages.
-func (m *Manager) handlePASE(exchangeID uint16, opcode Opcode, payload []byte) ([]byte, error) {
+func (m *Manager) handlePASE(exchangeID uint16, opcode Opcode, payload []byte) (*Message, error) {
+	resp, secureCtx, err := m.handlePASELocked(exchangeID, opcode, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	// Notify callback outside lock to prevent deadlocks
+	if secureCtx != nil && m.config.Callbacks.OnSessionEstablished != nil {
+		m.config.Callbacks.OnSessionEstablished(secureCtx)
+	}
+
+	return resp, nil
+}
+
+// handlePASELocked handles PASE messages under lock.
+// Returns response, established session (if any), and error.
+func (m *Manager) handlePASELocked(exchangeID uint16, opcode Opcode, payload []byte) (*Message, *session.SecureContext, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -194,41 +238,73 @@ func (m *Manager) handlePASE(exchangeID uint16, opcode Opcode, payload []byte) (
 		// New PASE handshake as responder
 		if exists {
 			// Already have a handshake on this exchange - send busy
-			return m.sendBusyResponse(ctx)
+			resp, err := m.sendBusyResponse(ctx)
+			return resp, nil, err
 		}
-		return m.handlePBKDFParamRequest(exchangeID, payload)
+		resp, err := m.handlePBKDFParamRequest(exchangeID, payload)
+		return resp, nil, err
 
 	case OpcodePBKDFParamResponse:
 		if !exists || ctx.handshakeType != HandshakeTypePASE || ctx.paseSession == nil {
-			return nil, ErrNoActiveHandshake
+			return nil, nil, ErrNoActiveHandshake
 		}
-		return m.handlePBKDFParamResponse(ctx, payload)
+		resp, err := m.handlePBKDFParamResponse(ctx, payload)
+		return resp, nil, err
 
 	case OpcodePASEPake1:
 		if !exists || ctx.handshakeType != HandshakeTypePASE || ctx.paseSession == nil {
-			return nil, ErrNoActiveHandshake
+			return nil, nil, ErrNoActiveHandshake
 		}
-		return m.handlePake1(ctx, payload)
+		resp, err := m.handlePake1(ctx, payload)
+		return resp, nil, err
 
 	case OpcodePASEPake2:
 		if !exists || ctx.handshakeType != HandshakeTypePASE || ctx.paseSession == nil {
-			return nil, ErrNoActiveHandshake
+			return nil, nil, ErrNoActiveHandshake
 		}
-		return m.handlePake2(ctx, payload)
+		resp, err := m.handlePake2(ctx, payload)
+		return resp, nil, err
 
 	case OpcodePASEPake3:
 		if !exists || ctx.handshakeType != HandshakeTypePASE || ctx.paseSession == nil {
-			return nil, ErrNoActiveHandshake
+			return nil, nil, ErrNoActiveHandshake
 		}
-		return m.handlePake3(exchangeID, ctx, payload)
+		resp, needsComplete, err := m.handlePake3(exchangeID, ctx, payload)
+		if err != nil {
+			return nil, nil, err
+		}
+		if needsComplete {
+			secureCtx, completeErr := m.completeHandshakeLocked(exchangeID, ctx)
+			if completeErr != nil {
+				return nil, nil, completeErr
+			}
+			return resp, secureCtx, nil
+		}
+		return resp, nil, nil
 
 	default:
-		return nil, ErrInvalidOpcode
+		return nil, nil, ErrInvalidOpcode
 	}
 }
 
 // handleCASE routes CASE protocol messages.
-func (m *Manager) handleCASE(exchangeID uint16, opcode Opcode, payload []byte) ([]byte, error) {
+func (m *Manager) handleCASE(exchangeID uint16, opcode Opcode, payload []byte) (*Message, error) {
+	resp, secureCtx, err := m.handleCASELocked(exchangeID, opcode, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	// Notify callback outside lock to prevent deadlocks
+	if secureCtx != nil && m.config.Callbacks.OnSessionEstablished != nil {
+		m.config.Callbacks.OnSessionEstablished(secureCtx)
+	}
+
+	return resp, nil
+}
+
+// handleCASELocked handles CASE messages under lock.
+// Returns response, established session (if any), and error.
+func (m *Manager) handleCASELocked(exchangeID uint16, opcode Opcode, payload []byte) (*Message, *session.SecureContext, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -239,37 +315,47 @@ func (m *Manager) handleCASE(exchangeID uint16, opcode Opcode, payload []byte) (
 		// New CASE handshake as responder
 		if exists {
 			// Already have a handshake on this exchange - send busy
-			return m.sendBusyResponse(ctx)
+			resp, err := m.sendBusyResponse(ctx)
+			return resp, nil, err
 		}
-		return m.handleSigma1(exchangeID, payload)
+		resp, err := m.handleSigma1(exchangeID, payload)
+		return resp, nil, err
 
 	case OpcodeCASESigma2, OpcodeCASESigma2Resume:
 		if !exists || ctx.handshakeType != HandshakeTypeCASE || ctx.caseSession == nil {
-			return nil, ErrNoActiveHandshake
+			return nil, nil, ErrNoActiveHandshake
 		}
-		return m.handleSigma2(ctx, opcode, payload)
+		resp, err := m.handleSigma2(ctx, opcode, payload)
+		return resp, nil, err
 
 	case OpcodeCASESigma3:
 		if !exists || ctx.handshakeType != HandshakeTypeCASE || ctx.caseSession == nil {
-			return nil, ErrNoActiveHandshake
+			return nil, nil, ErrNoActiveHandshake
 		}
-		return m.handleSigma3(exchangeID, ctx, payload)
+		resp, needsComplete, err := m.handleSigma3(exchangeID, ctx, payload)
+		if err != nil {
+			return nil, nil, err
+		}
+		if needsComplete {
+			secureCtx, completeErr := m.completeHandshakeLocked(exchangeID, ctx)
+			if completeErr != nil {
+				return nil, nil, completeErr
+			}
+			return resp, secureCtx, nil
+		}
+		return resp, nil, nil
 
 	default:
-		return nil, ErrInvalidOpcode
+		return nil, nil, ErrInvalidOpcode
 	}
 }
 
 // handleStatusReport processes an incoming StatusReport.
-func (m *Manager) handleStatusReport(exchangeID uint16, payload []byte) ([]byte, error) {
+func (m *Manager) handleStatusReport(exchangeID uint16, payload []byte) (*Message, error) {
 	status, err := DecodeStatusReport(payload)
 	if err != nil {
 		return nil, err
 	}
-
-	m.mu.Lock()
-	ctx, exists := m.handshakes[exchangeID]
-	m.mu.Unlock()
 
 	// Check if this is a Busy response
 	if status.IsBusy() {
@@ -285,9 +371,15 @@ func (m *Manager) handleStatusReport(exchangeID uint16, payload []byte) ([]byte,
 	// Check for session establishment success
 	if status.IsSuccess() && status.IsSecureChannel() &&
 		status.SecureChannelCode() == ProtocolCodeSuccess {
-		if exists {
-			return m.completeHandshake(exchangeID, ctx)
+		secureCtx, err := m.handleStatusReportSuccess(exchangeID)
+		if err != nil {
+			return nil, err
 		}
+		// Notify callback outside lock
+		if secureCtx != nil && m.config.Callbacks.OnSessionEstablished != nil {
+			m.config.Callbacks.OnSessionEstablished(secureCtx)
+		}
+		return nil, nil
 	}
 
 	// Check for CloseSession
@@ -298,18 +390,35 @@ func (m *Manager) handleStatusReport(exchangeID uint16, payload []byte) ([]byte,
 	}
 
 	// Error status during handshake
+	m.mu.Lock()
+	ctx, exists := m.handshakes[exchangeID]
+	m.mu.Unlock()
 	if exists && !status.IsSuccess() {
 		m.cleanupHandshake(exchangeID)
 		if m.config.Callbacks.OnSessionError != nil {
 			m.config.Callbacks.OnSessionError(status, "StatusReport")
 		}
 	}
+	_ = ctx // ctx used for exists check
 
 	return nil, nil
 }
 
+// handleStatusReportSuccess handles successful status report under lock.
+func (m *Manager) handleStatusReportSuccess(exchangeID uint16) (*session.SecureContext, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ctx, exists := m.handshakes[exchangeID]
+	if !exists {
+		return nil, nil
+	}
+
+	return m.completeHandshakeLocked(exchangeID, ctx)
+}
+
 // sendBusyResponse creates a Busy StatusReport response.
-func (m *Manager) sendBusyResponse(ctx *handshakeContext) ([]byte, error) {
+func (m *Manager) sendBusyResponse(ctx *handshakeContext) (*Message, error) {
 	var waitTimeMs uint16 = DefaultBusyWaitTime
 
 	// Calculate wait time based on handshake state
@@ -321,13 +430,18 @@ func (m *Manager) sendBusyResponse(ctx *handshakeContext) ([]byte, error) {
 		}
 	}
 
-	return Busy(waitTimeMs).Encode(), nil
+	return NewMessage(OpcodeStatusReport, Busy(waitTimeMs).Encode()), nil
 }
 
 // cleanupHandshake removes a handshake context.
 func (m *Manager) cleanupHandshake(exchangeID uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.handshakes, exchangeID)
+}
+
+// cleanupHandshakeLocked removes a handshake context. Caller must hold m.mu.
+func (m *Manager) cleanupHandshakeLocked(exchangeID uint16) {
 	delete(m.handshakes, exchangeID)
 }
 
@@ -425,77 +539,137 @@ func (m *Manager) StartCASE(
 }
 
 // handlePBKDFParamRequest handles an incoming PBKDFParamRequest (responder).
-func (m *Manager) handlePBKDFParamRequest(exchangeID uint16, payload []byte) ([]byte, error) {
-	// This requires the responder to have verifier, salt, and iterations configured
-	// For now, return an error - the caller should set up a responder session first
-	return nil, errors.New("securechannel: PASE responder not configured (use SetPASEResponder)")
+func (m *Manager) handlePBKDFParamRequest(exchangeID uint16, payload []byte) (*Message, error) {
+	// Check if PASE responder is configured
+	if m.paseResponder == nil {
+		return nil, errors.New("securechannel: PASE responder not configured (commissioning window not open)")
+	}
+
+	// Allocate session ID
+	localSessionID, err := m.config.SessionManager.AllocateSessionID()
+	if err != nil {
+		return nil, ErrSessionTableFull
+	}
+
+	// Create PASE session as responder
+	paseSession, err := pase.NewResponder(
+		m.paseResponder.verifier,
+		m.paseResponder.salt,
+		m.paseResponder.iterations,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle the PBKDFParamRequest and get response
+	pbkdfResp, err := paseSession.HandlePBKDFParamRequest(payload, localSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store peer session ID from the request
+	peerSessionID := paseSession.PeerSessionID()
+
+	// Track the handshake
+	m.handshakes[exchangeID] = &handshakeContext{
+		handshakeType:  HandshakeTypePASE,
+		paseSession:    paseSession,
+		localSessionID: localSessionID,
+		peerSessionID:  peerSessionID,
+		startTime:      time.Now(),
+	}
+
+	return NewMessage(OpcodePBKDFParamResponse, pbkdfResp), nil
 }
 
 // SetPASEResponder configures the Manager to respond to PASE requests.
 // This must be called before receiving PBKDFParamRequest messages.
+// Call ClearPASEResponder when the commissioning window closes.
 func (m *Manager) SetPASEResponder(verifier *pase.Verifier, salt []byte, iterations uint32) error {
-	// Store verifier for PASE responses
-	// This is a simplified implementation - full version would track this per-exchange
+	if verifier == nil {
+		return errors.New("securechannel: verifier is nil")
+	}
+	if len(salt) < pase.PBKDFMinSaltLength || len(salt) > pase.PBKDFMaxSaltLength {
+		return errors.New("securechannel: invalid salt length")
+	}
+	if iterations < pase.PBKDFMinIterations || iterations > pase.PBKDFMaxIterations {
+		return errors.New("securechannel: invalid iteration count")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Store in manager config or a dedicated field
-	// For now, this is a placeholder
+	m.paseResponder = &paseResponderConfig{
+		verifier:   verifier,
+		salt:       salt,
+		iterations: iterations,
+	}
 	return nil
 }
 
+// ClearPASEResponder clears the PASE responder configuration.
+// Call this when the commissioning window closes.
+func (m *Manager) ClearPASEResponder() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.paseResponder = nil
+}
+
+// HasPASEResponder returns true if PASE responder is configured.
+func (m *Manager) HasPASEResponder() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.paseResponder != nil
+}
+
 // handlePBKDFParamResponse handles PBKDFParamResponse (initiator).
-func (m *Manager) handlePBKDFParamResponse(ctx *handshakeContext, payload []byte) ([]byte, error) {
+func (m *Manager) handlePBKDFParamResponse(ctx *handshakeContext, payload []byte) (*Message, error) {
 	pake1, err := ctx.paseSession.HandlePBKDFParamResponse(payload)
 	if err != nil {
 		return nil, err
 	}
-	return pake1, nil
+	return NewMessage(OpcodePASEPake1, pake1), nil
 }
 
 // handlePake1 handles Pake1 message (responder).
-func (m *Manager) handlePake1(ctx *handshakeContext, payload []byte) ([]byte, error) {
+func (m *Manager) handlePake1(ctx *handshakeContext, payload []byte) (*Message, error) {
 	pake2, err := ctx.paseSession.HandlePake1(payload)
 	if err != nil {
 		return nil, err
 	}
-	return pake2, nil
+	return NewMessage(OpcodePASEPake2, pake2), nil
 }
 
 // handlePake2 handles Pake2 message (initiator).
-func (m *Manager) handlePake2(ctx *handshakeContext, payload []byte) ([]byte, error) {
+func (m *Manager) handlePake2(ctx *handshakeContext, payload []byte) (*Message, error) {
 	pake3, err := ctx.paseSession.HandlePake2(payload)
 	if err != nil {
 		return nil, err
 	}
-	return pake3, nil
+	return NewMessage(OpcodePASEPake3, pake3), nil
 }
 
-// handlePake3 handles Pake3 message (responder) and completes the handshake.
-func (m *Manager) handlePake3(exchangeID uint16, ctx *handshakeContext, payload []byte) ([]byte, error) {
+// handlePake3 handles Pake3 message (responder).
+// Returns the response message and a flag indicating if handshake should be completed.
+func (m *Manager) handlePake3(exchangeID uint16, ctx *handshakeContext, payload []byte) (*Message, bool, error) {
 	_, success, err := ctx.paseSession.HandlePake3(payload)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if !success {
-		return nil, errors.New("securechannel: PASE confirmation failed")
+		return nil, false, errors.New("securechannel: PASE confirmation failed")
 	}
 
-	// Complete the session on responder side if successful
-	if ctx.paseSession.State() == pase.StateComplete {
-		_, completeErr := m.completeHandshake(exchangeID, ctx)
-		if completeErr != nil {
-			return nil, completeErr
-		}
-	}
+	// Signal completion needed
+	needsComplete := ctx.paseSession.State() == pase.StateComplete
 
 	// Return success StatusReport
-	return Success().Encode(), nil
+	return NewMessage(OpcodeStatusReport, Success().Encode()), needsComplete, nil
 }
 
 // handleSigma1 handles an incoming Sigma1 (responder).
-func (m *Manager) handleSigma1(exchangeID uint16, payload []byte) ([]byte, error) {
+func (m *Manager) handleSigma1(exchangeID uint16, payload []byte) (*Message, error) {
 	// Allocate session ID
 	localSessionID, err := m.config.SessionManager.AllocateSessionID()
 	if err != nil {
@@ -517,7 +691,7 @@ func (m *Manager) handleSigma1(exchangeID uint16, payload []byte) ([]byte, error
 	}
 
 	// Handle Sigma1 (returns response, isResumption flag, error)
-	sigma2, _, err := caseSession.HandleSigma1(payload, localSessionID)
+	sigma2, isResumption, err := caseSession.HandleSigma1(payload, localSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -530,11 +704,15 @@ func (m *Manager) handleSigma1(exchangeID uint16, payload []byte) ([]byte, error
 		startTime:      time.Now(),
 	}
 
-	return sigma2, nil
+	// Return appropriate opcode based on resumption
+	if isResumption {
+		return NewMessage(OpcodeCASESigma2Resume, sigma2), nil
+	}
+	return NewMessage(OpcodeCASESigma2, sigma2), nil
 }
 
 // handleSigma2 handles Sigma2 or Sigma2Resume (initiator).
-func (m *Manager) handleSigma2(ctx *handshakeContext, opcode Opcode, payload []byte) ([]byte, error) {
+func (m *Manager) handleSigma2(ctx *handshakeContext, opcode Opcode, payload []byte) (*Message, error) {
 	if opcode == OpcodeCASESigma2Resume {
 		// HandleSigma2Resume returns only error (session completes with status report)
 		err := ctx.caseSession.HandleSigma2Resume(payload)
@@ -551,31 +729,28 @@ func (m *Manager) handleSigma2(ctx *handshakeContext, opcode Opcode, payload []b
 		return nil, err
 	}
 
-	return sigma3, nil
+	return NewMessage(OpcodeCASESigma3, sigma3), nil
 }
 
-// handleSigma3 handles Sigma3 (responder) and completes the handshake.
-func (m *Manager) handleSigma3(exchangeID uint16, ctx *handshakeContext, payload []byte) ([]byte, error) {
+// handleSigma3 handles Sigma3 (responder).
+// Returns the response message and a flag indicating if handshake should be completed.
+func (m *Manager) handleSigma3(exchangeID uint16, ctx *handshakeContext, payload []byte) (*Message, bool, error) {
 	// HandleSigma3 returns only error
 	err := ctx.caseSession.HandleSigma3(payload)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	// Complete the session on responder side
-	if ctx.caseSession.State() == casesession.StateComplete {
-		_, completeErr := m.completeHandshake(exchangeID, ctx)
-		if completeErr != nil {
-			return nil, completeErr
-		}
-	}
+	// Signal completion needed
+	needsComplete := ctx.caseSession.State() == casesession.StateComplete
 
 	// Return success StatusReport
-	return Success().Encode(), nil
+	return NewMessage(OpcodeStatusReport, Success().Encode()), needsComplete, nil
 }
 
-// completeHandshake creates the secure session context and notifies callbacks.
-func (m *Manager) completeHandshake(exchangeID uint16, ctx *handshakeContext) ([]byte, error) {
+// completeHandshakeLocked creates the secure session context.
+// Caller must hold m.mu. Returns the secure context for callback notification.
+func (m *Manager) completeHandshakeLocked(exchangeID uint16, ctx *handshakeContext) (*session.SecureContext, error) {
 	var secureCtx *session.SecureContext
 	var err error
 
@@ -590,7 +765,7 @@ func (m *Manager) completeHandshake(exchangeID uint16, ctx *handshakeContext) ([
 		if m.config.Callbacks.OnSessionError != nil {
 			m.config.Callbacks.OnSessionError(err, "CompleteHandshake")
 		}
-		m.cleanupHandshake(exchangeID)
+		m.cleanupHandshakeLocked(exchangeID)
 		return nil, err
 	}
 
@@ -599,19 +774,15 @@ func (m *Manager) completeHandshake(exchangeID uint16, ctx *handshakeContext) ([
 		if m.config.Callbacks.OnSessionError != nil {
 			m.config.Callbacks.OnSessionError(err, "AddSecureContext")
 		}
-		m.cleanupHandshake(exchangeID)
+		m.cleanupHandshakeLocked(exchangeID)
 		return nil, err
 	}
 
-	// Notify callback
-	if m.config.Callbacks.OnSessionEstablished != nil {
-		m.config.Callbacks.OnSessionEstablished(secureCtx)
-	}
-
 	// Clean up handshake tracking
-	m.cleanupHandshake(exchangeID)
+	m.cleanupHandshakeLocked(exchangeID)
 
-	return nil, nil
+	// Return secure context for callback notification (done outside lock by caller)
+	return secureCtx, nil
 }
 
 // completePASESession creates a SecureContext from a completed PASE session.

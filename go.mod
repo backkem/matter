@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/grandcat/zeroconf v1.0.0
+	github.com/pion/transport/v3 v3.1.1
 	golang.org/x/crypto v0.46.0
 )
 

@@ -3,6 +3,7 @@ package securechannel
 import (
 	"testing"
 
+	"github.com/backkem/matter/pkg/securechannel/pase"
 	"github.com/backkem/matter/pkg/session"
 )
 
@@ -125,7 +126,8 @@ func TestRouteInvalidOpcode(t *testing.T) {
 	mgr := NewManager(ManagerConfig{SessionManager: sessionMgr})
 
 	// Try to route a non-permitted opcode
-	_, err := mgr.Route(1, OpcodeMsgCounterSyncReq, nil)
+	msg := &Message{Opcode: OpcodeMsgCounterSyncReq, Payload: nil}
+	_, err := mgr.Route(1, msg)
 	if err != ErrInvalidOpcode {
 		t.Errorf("Route with invalid opcode should return ErrInvalidOpcode, got %v", err)
 	}
@@ -151,7 +153,8 @@ func TestRouteStatusReport(t *testing.T) {
 	busyBytes := busy.Encode()
 
 	// Route the status report
-	_, err := mgr.Route(1, OpcodeStatusReport, busyBytes)
+	msg := &Message{Opcode: OpcodeStatusReport, Payload: busyBytes}
+	_, err := mgr.Route(1, msg)
 	if err != nil {
 		t.Errorf("Route Busy status should not error, got %v", err)
 	}
@@ -313,4 +316,194 @@ func TestActiveHandshakeCount(t *testing.T) {
 	if mgr.ActiveHandshakeCount() != 2 {
 		t.Errorf("ActiveHandshakeCount = %d, want 2", mgr.ActiveHandshakeCount())
 	}
+}
+
+func TestSetPASEResponder(t *testing.T) {
+	sessionMgr := session.NewManager(session.ManagerConfig{})
+	mgr := NewManager(ManagerConfig{SessionManager: sessionMgr})
+
+	// Initially no PASE responder
+	if mgr.HasPASEResponder() {
+		t.Error("HasPASEResponder should be false initially")
+	}
+
+	// Generate verifier for passcode 20202021
+	passcode := uint32(20202021)
+	salt := make([]byte, 32)
+	for i := range salt {
+		salt[i] = byte(i)
+	}
+	iterations := uint32(1000)
+
+	verifier, err := pase.GenerateVerifier(passcode, salt, iterations)
+	if err != nil {
+		t.Fatalf("GenerateVerifier failed: %v", err)
+	}
+
+	// Set PASE responder
+	err = mgr.SetPASEResponder(verifier, salt, iterations)
+	if err != nil {
+		t.Fatalf("SetPASEResponder failed: %v", err)
+	}
+
+	if !mgr.HasPASEResponder() {
+		t.Error("HasPASEResponder should be true after SetPASEResponder")
+	}
+
+	// Clear PASE responder
+	mgr.ClearPASEResponder()
+	if mgr.HasPASEResponder() {
+		t.Error("HasPASEResponder should be false after ClearPASEResponder")
+	}
+}
+
+func TestSetPASEResponder_InvalidParams(t *testing.T) {
+	sessionMgr := session.NewManager(session.ManagerConfig{})
+	mgr := NewManager(ManagerConfig{SessionManager: sessionMgr})
+
+	salt := make([]byte, 32)
+	verifier, _ := pase.GenerateVerifier(20202021, salt, 1000)
+
+	// Nil verifier
+	err := mgr.SetPASEResponder(nil, salt, 1000)
+	if err == nil {
+		t.Error("SetPASEResponder with nil verifier should fail")
+	}
+
+	// Salt too short
+	err = mgr.SetPASEResponder(verifier, make([]byte, 8), 1000)
+	if err == nil {
+		t.Error("SetPASEResponder with short salt should fail")
+	}
+
+	// Iterations too low
+	err = mgr.SetPASEResponder(verifier, salt, 100)
+	if err == nil {
+		t.Error("SetPASEResponder with low iterations should fail")
+	}
+}
+
+// TestPASEHandshake tests a full PASE handshake between initiator and responder managers.
+func TestPASEHandshake(t *testing.T) {
+	// Shared passcode and PBKDF parameters
+	passcode := uint32(20202021)
+	salt := make([]byte, 32)
+	for i := range salt {
+		salt[i] = byte(i)
+	}
+	iterations := uint32(1000)
+
+	// Generate verifier
+	verifier, err := pase.GenerateVerifier(passcode, salt, iterations)
+	if err != nil {
+		t.Fatalf("GenerateVerifier failed: %v", err)
+	}
+
+	// Create initiator manager (controller)
+	initiatorSessionMgr := session.NewManager(session.ManagerConfig{})
+	var initiatorSessionEstablished bool
+	initiatorMgr := NewManager(ManagerConfig{
+		SessionManager: initiatorSessionMgr,
+		Callbacks: Callbacks{
+			OnSessionEstablished: func(ctx *session.SecureContext) {
+				initiatorSessionEstablished = true
+				t.Logf("Initiator: session established, localID=%d", ctx.LocalSessionID())
+			},
+			OnSessionError: func(err error, stage string) {
+				t.Logf("Initiator error at %s: %v", stage, err)
+			},
+		},
+	})
+
+	// Create responder manager (device)
+	responderSessionMgr := session.NewManager(session.ManagerConfig{})
+	var responderSessionEstablished bool
+	responderMgr := NewManager(ManagerConfig{
+		SessionManager: responderSessionMgr,
+		Callbacks: Callbacks{
+			OnSessionEstablished: func(ctx *session.SecureContext) {
+				responderSessionEstablished = true
+				t.Logf("Responder: session established, localID=%d", ctx.LocalSessionID())
+			},
+			OnSessionError: func(err error, stage string) {
+				t.Logf("Responder error at %s: %v", stage, err)
+			},
+		},
+	})
+
+	// Configure responder with PASE verifier
+	err = responderMgr.SetPASEResponder(verifier, salt, iterations)
+	if err != nil {
+		t.Fatalf("SetPASEResponder failed: %v", err)
+	}
+
+	exchangeID := uint16(1)
+
+	// Step 1: Initiator starts PASE (PBKDFParamRequest)
+	pbkdfReq, err := initiatorMgr.StartPASE(exchangeID, passcode)
+	if err != nil {
+		t.Fatalf("StartPASE failed: %v", err)
+	}
+	t.Logf("Step 1: PBKDFParamRequest (%d bytes)", len(pbkdfReq))
+
+	// Step 2: Responder handles PBKDFParamRequest -> PBKDFParamResponse
+	pbkdfResp, err := responderMgr.Route(exchangeID, &Message{Opcode: OpcodePBKDFParamRequest, Payload: pbkdfReq})
+	if err != nil {
+		t.Fatalf("Route PBKDFParamRequest failed: %v", err)
+	}
+	t.Logf("Step 2: PBKDFParamResponse (%d bytes)", len(pbkdfResp.Payload))
+
+	// Step 3: Initiator handles PBKDFParamResponse -> Pake1
+	pake1, err := initiatorMgr.Route(exchangeID, pbkdfResp)
+	if err != nil {
+		t.Fatalf("Route PBKDFParamResponse failed: %v", err)
+	}
+	t.Logf("Step 3: Pake1 (%d bytes)", len(pake1.Payload))
+
+	// Step 4: Responder handles Pake1 -> Pake2
+	pake2, err := responderMgr.Route(exchangeID, pake1)
+	if err != nil {
+		t.Fatalf("Route Pake1 failed: %v", err)
+	}
+	t.Logf("Step 4: Pake2 (%d bytes)", len(pake2.Payload))
+
+	// Step 5: Initiator handles Pake2 -> Pake3
+	pake3, err := initiatorMgr.Route(exchangeID, pake2)
+	if err != nil {
+		t.Fatalf("Route Pake2 failed: %v", err)
+	}
+	t.Logf("Step 5: Pake3 (%d bytes)", len(pake3.Payload))
+
+	// Step 6: Responder handles Pake3 -> StatusReport (success)
+	statusReport, err := responderMgr.Route(exchangeID, pake3)
+	if err != nil {
+		t.Fatalf("Route Pake3 failed: %v", err)
+	}
+	t.Logf("Step 6: StatusReport (%d bytes)", len(statusReport.Payload))
+
+	// Responder should have established session by now
+	if !responderSessionEstablished {
+		t.Error("Responder session should be established after Pake3")
+	}
+
+	// Step 7: Initiator handles StatusReport -> complete
+	_, err = initiatorMgr.Route(exchangeID, statusReport)
+	if err != nil {
+		t.Fatalf("Route StatusReport failed: %v", err)
+	}
+
+	// Initiator should have established session
+	if !initiatorSessionEstablished {
+		t.Error("Initiator session should be established after StatusReport")
+	}
+
+	// Verify both session managers have secure contexts
+	if initiatorSessionMgr.SecureSessionCount() != 1 {
+		t.Errorf("Initiator should have 1 secure session, got %d", initiatorSessionMgr.SecureSessionCount())
+	}
+	if responderSessionMgr.SecureSessionCount() != 1 {
+		t.Errorf("Responder should have 1 secure session, got %d", responderSessionMgr.SecureSessionCount())
+	}
+
+	t.Log("PASE handshake completed successfully!")
 }

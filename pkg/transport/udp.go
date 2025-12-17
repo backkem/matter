@@ -3,6 +3,7 @@ package transport
 import (
 	"net"
 	"sync"
+	"time"
 
 	"github.com/backkem/matter/pkg/message"
 )
@@ -100,6 +101,9 @@ func (u *UDP) Stop() error {
 	u.mu.Unlock()
 
 	close(u.closeCh)
+
+	// Set a short deadline to unblock any pending reads
+	u.conn.SetReadDeadline(time.Now())
 	u.conn.Close()
 	u.wg.Wait()
 

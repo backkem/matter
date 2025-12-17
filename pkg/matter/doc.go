@@ -43,9 +43,13 @@
 //
 // For testing, use MemoryStorage and the virtual network helpers:
 //
-//	device := createTestDevice()
-//	controller := createTestController()
-//	matter.ConnectPipe(controller, device)
+//	// Create a pair of nodes connected via a bridge
+//	device, controller, bridge, _ := matter.TestNodePair()
+//	device.Start(ctx)
+//	controller.Start(ctx)
+//
+//	// Process messages between nodes
+//	bridge.Process()
 //
 // See the examples/ directory for complete working examples.
 package matter

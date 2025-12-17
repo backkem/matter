@@ -59,6 +59,15 @@ func (n *Node) openCommissioningWindowLocked(timeout time.Duration) error {
 		return err
 	}
 
+	// Configure PASE responder in secure channel manager
+	if n.scMgr != nil {
+		if err := n.scMgr.SetPASEResponder(n.paseInfo.verifier, n.paseInfo.salt, n.paseInfo.iterations); err != nil {
+			n.commWindow.Close()
+			n.commWindow = nil
+			return err
+		}
+	}
+
 	// Start advertising as commissionable
 	n.advertiseCommissionable()
 
@@ -71,10 +80,12 @@ func (n *Node) openCommissioningWindowLocked(timeout time.Duration) error {
 	}
 
 	// Start the commissioning window in background
+	// Capture commWindow to avoid race if Stop() is called
+	cw := n.commWindow
 	go func() {
 		ctx, cancel := context.WithCancel(n.ctx)
 		defer cancel()
-		n.commWindow.Open(ctx)
+		cw.Open(ctx)
 	}()
 
 	return nil
@@ -91,6 +102,11 @@ func (n *Node) CloseCommissioningWindow() error {
 
 	n.commWindow.Close()
 	n.commWindow = nil
+
+	// Clear PASE responder from secure channel manager
+	if n.scMgr != nil {
+		n.scMgr.ClearPASEResponder()
+	}
 
 	// Stop commissionable advertising
 	if n.discoveryMgr != nil {
@@ -147,6 +163,11 @@ func (n *Node) onCommissioningComplete() {
 		n.commWindow = nil
 	}
 
+	// Clear PASE responder from secure channel manager
+	if n.scMgr != nil {
+		n.scMgr.ClearPASEResponder()
+	}
+
 	// Stop commissionable advertising
 	if n.discoveryMgr != nil {
 		n.discoveryMgr.StopAdvertising(discovery.ServiceTypeCommissionable)
@@ -170,10 +191,23 @@ func (n *Node) onCommissioningComplete() {
 
 // onCommissioningWindowClosed handles window closure.
 func (n *Node) onCommissioningWindowClosed(reason error) {
-	n.mu.Lock()
+	// Use TryLock to avoid deadlock if called during Stop()
+	if !n.mu.TryLock() {
+		// Already being shut down
+		return
+	}
 	defer n.mu.Unlock()
 
+	// Already cleaned up (e.g., by Stop())
+	if n.commWindow == nil {
+		return
+	}
 	n.commWindow = nil
+
+	// Clear PASE responder from secure channel manager
+	if n.scMgr != nil {
+		n.scMgr.ClearPASEResponder()
+	}
 
 	// Stop commissionable advertising
 	if n.discoveryMgr != nil {

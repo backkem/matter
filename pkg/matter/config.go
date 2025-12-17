@@ -1,11 +1,11 @@
 package matter
 
 import (
-	"net"
 	"time"
 
 	"github.com/backkem/matter/pkg/fabric"
 	"github.com/backkem/matter/pkg/session"
+	"github.com/backkem/matter/pkg/transport"
 )
 
 // DefaultPort is the default Matter port.
@@ -48,18 +48,7 @@ type NodeConfig struct {
 	OnCommissioningComplete func(fabricIndex fabric.FabricIndex)
 
 	// Advanced - Internal use / Testing
-	TransportFactory TransportFactory // For virtual network testing
-}
-
-// TransportFactory creates transport connections for testing.
-type TransportFactory interface {
-	// CreateUDPConn creates a UDP connection for testing.
-	// If nil is returned, the default OS UDP socket is used.
-	CreateUDPConn(port int) (net.PacketConn, error)
-
-	// CreateTCPListener creates a TCP listener for testing.
-	// If nil is returned, the default OS TCP listener is used.
-	CreateTCPListener(port int) (net.Listener, error)
+	TransportFactory transport.Factory // For virtual network testing
 }
 
 // Validate checks the configuration for errors.

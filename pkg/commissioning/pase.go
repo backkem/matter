@@ -3,6 +3,7 @@ package commissioning
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -121,25 +122,31 @@ func (c *PASEClient) Establish(
 	}
 
 	// Step 2: Wait for PBKDFParamResponse and get Pake1
-	pake1, err := handler.waitForNextMessage(ctx)
+	pake1Msg, err := handler.waitForNextMessage(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("step 2 wait: %w", err)
+	}
+	if pake1Msg == nil {
+		return nil, fmt.Errorf("step 2: pake1Msg is nil")
 	}
 
 	// Send Pake1
-	err = exch.SendMessage(uint8(securechannel.OpcodePASEPake1), pake1, true)
+	err = exch.SendMessage(uint8(pake1Msg.Opcode), pake1Msg.Payload, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("step 2 send: %w", err)
 	}
 
 	// Step 3: Wait for Pake2 and get Pake3
-	pake3, err := handler.waitForNextMessage(ctx)
+	pake3Msg, err := handler.waitForNextMessage(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("step 3 wait: %w", err)
+	}
+	if pake3Msg == nil {
+		return nil, fmt.Errorf("step 3: pake3Msg is nil")
 	}
 
 	// Send Pake3
-	err = exch.SendMessage(uint8(securechannel.OpcodePASEPake3), pake3, true)
+	err = exch.SendMessage(uint8(pake3Msg.Opcode), pake3Msg.Payload, true)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +182,7 @@ type paseHandler struct {
 }
 
 type paseResult struct {
-	nextMsg []byte
+	nextMsg *securechannel.Message
 	err     error
 }
 
@@ -202,8 +209,20 @@ func (h *paseHandler) OnMessage(
 
 	opcode := securechannel.Opcode(header.ProtocolOpcode)
 
+	// Skip acknowledgement messages - they're handled by the exchange layer
+	// and should not affect the PASE state machine
+	if opcode == securechannel.OpcodeStandaloneAck ||
+		opcode == securechannel.OpcodeMsgCounterSyncReq ||
+		opcode == securechannel.OpcodeMsgCounterSyncResp {
+		return nil, nil
+	}
+
 	// Route through secure channel manager
-	nextMsg, err := h.secureChannel.Route(ctx.ID, opcode, payload)
+	msg := &securechannel.Message{
+		Opcode:  opcode,
+		Payload: payload,
+	}
+	nextMsg, err := h.secureChannel.Route(ctx.ID, msg)
 	if err != nil {
 		h.sendResult(paseResult{err: err})
 		return nil, err
@@ -250,7 +269,7 @@ func (h *paseHandler) sendResult(result paseResult) {
 	}
 }
 
-func (h *paseHandler) waitForNextMessage(ctx context.Context) ([]byte, error) {
+func (h *paseHandler) waitForNextMessage(ctx context.Context) (*securechannel.Message, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ErrPASETimeout

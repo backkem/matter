@@ -321,3 +321,180 @@ func TestManager_KeyZeroizationOnRemove(t *testing.T) {
 		}
 	}
 }
+
+// Unsecured context tests per Spec 4.13.2.1
+
+func TestManager_FindOrCreateUnsecuredContext(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+
+	t.Run("invalid node ID returns error", func(t *testing.T) {
+		ctx, err := m.FindOrCreateUnsecuredContext(0)
+		if err != ErrInvalidNodeID {
+			t.Errorf("FindOrCreateUnsecuredContext(0) error = %v, want ErrInvalidNodeID", err)
+		}
+		if ctx != nil {
+			t.Error("FindOrCreateUnsecuredContext(0) should return nil context")
+		}
+	})
+
+	t.Run("creates responder context for new node ID", func(t *testing.T) {
+		sourceNodeID := fabric.NodeID(0x1234567890ABCDEF)
+		ctx, err := m.FindOrCreateUnsecuredContext(sourceNodeID)
+		if err != nil {
+			t.Fatalf("FindOrCreateUnsecuredContext() error = %v", err)
+		}
+		if ctx == nil {
+			t.Fatal("FindOrCreateUnsecuredContext() returned nil")
+		}
+
+		// Per Spec 4.13.2.1: Session Role should be responder
+		if ctx.Role() != SessionRoleResponder {
+			t.Errorf("Role() = %v, want SessionRoleResponder", ctx.Role())
+		}
+
+		// Per Spec 4.13.2.1: Ephemeral Initiator Node ID should be recorded
+		if ctx.EphemeralNodeID() != sourceNodeID {
+			t.Errorf("EphemeralNodeID() = %v, want %v", ctx.EphemeralNodeID(), sourceNodeID)
+		}
+
+		if m.UnsecuredSessionCount() != 1 {
+			t.Errorf("UnsecuredSessionCount() = %d, want 1", m.UnsecuredSessionCount())
+		}
+	})
+
+	t.Run("returns existing context for same node ID", func(t *testing.T) {
+		sourceNodeID := fabric.NodeID(0x1234567890ABCDEF)
+
+		// First call - creates
+		ctx1, err := m.FindOrCreateUnsecuredContext(sourceNodeID)
+		if err != nil {
+			t.Fatalf("FindOrCreateUnsecuredContext() error = %v", err)
+		}
+
+		// Second call - finds existing
+		ctx2, err := m.FindOrCreateUnsecuredContext(sourceNodeID)
+		if err != nil {
+			t.Fatalf("FindOrCreateUnsecuredContext() error = %v", err)
+		}
+
+		if ctx1 != ctx2 {
+			t.Error("FindOrCreateUnsecuredContext() should return same context for same node ID")
+		}
+	})
+}
+
+func TestManager_CreateUnsecuredInitiatorContext(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+
+	t.Run("creates initiator context", func(t *testing.T) {
+		ctx, err := m.CreateUnsecuredInitiatorContext()
+		if err != nil {
+			t.Fatalf("CreateUnsecuredInitiatorContext() error = %v", err)
+		}
+		if ctx == nil {
+			t.Fatal("CreateUnsecuredInitiatorContext() returned nil")
+		}
+
+		// Per Spec 4.13.2.1: Session Role should be initiator
+		if ctx.Role() != SessionRoleInitiator {
+			t.Errorf("Role() = %v, want SessionRoleInitiator", ctx.Role())
+		}
+
+		// Per Spec 4.13.2.1: Ephemeral Node ID should be in operational range
+		ephID := ctx.EphemeralNodeID()
+		if ephID < fabric.NodeIDMinOperational || ephID > fabric.NodeIDMaxOperational {
+			t.Errorf("EphemeralNodeID() = %x, not in operational range", ephID)
+		}
+
+		if m.UnsecuredSessionCount() != 1 {
+			t.Errorf("UnsecuredSessionCount() = %d, want 1", m.UnsecuredSessionCount())
+		}
+	})
+
+	t.Run("no collision between contexts", func(t *testing.T) {
+		m := NewManager(ManagerConfig{})
+		seen := make(map[fabric.NodeID]bool)
+
+		// Create multiple initiator contexts
+		for i := 0; i < 10; i++ {
+			ctx, err := m.CreateUnsecuredInitiatorContext()
+			if err != nil {
+				t.Fatalf("CreateUnsecuredInitiatorContext() error = %v", err)
+			}
+			ephID := ctx.EphemeralNodeID()
+			if seen[ephID] {
+				t.Errorf("Duplicate ephemeral ID: %x", ephID)
+			}
+			seen[ephID] = true
+		}
+	})
+}
+
+func TestManager_FindUnsecuredContext(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+
+	// Create initiator context (has random ephemeral ID)
+	ctx, _ := m.CreateUnsecuredInitiatorContext()
+	ephID := ctx.EphemeralNodeID()
+
+	// Should find it
+	found := m.FindUnsecuredContext(ephID)
+	if found != ctx {
+		t.Error("FindUnsecuredContext() should return the created context")
+	}
+
+	// Should not find non-existent
+	notFound := m.FindUnsecuredContext(0x9999)
+	if notFound != nil {
+		t.Error("FindUnsecuredContext() should return nil for unknown ID")
+	}
+}
+
+func TestManager_RemoveUnsecuredContext(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+
+	// Create context
+	ctx, _ := m.CreateUnsecuredInitiatorContext()
+	ephID := ctx.EphemeralNodeID()
+
+	if m.UnsecuredSessionCount() != 1 {
+		t.Fatalf("UnsecuredSessionCount() = %d, want 1", m.UnsecuredSessionCount())
+	}
+
+	// Remove
+	m.RemoveUnsecuredContext(ephID)
+
+	if m.UnsecuredSessionCount() != 0 {
+		t.Errorf("UnsecuredSessionCount() after remove = %d, want 0", m.UnsecuredSessionCount())
+	}
+
+	// Should no longer be findable
+	if m.FindUnsecuredContext(ephID) != nil {
+		t.Error("FindUnsecuredContext() should return nil after remove")
+	}
+}
+
+func TestManager_ClearIncludesUnsecured(t *testing.T) {
+	m := NewManager(ManagerConfig{MaxSessions: 10})
+
+	// Add secure session
+	m.AddSecureContext(createTestSecureContext(1))
+
+	// Add unsecured sessions
+	m.CreateUnsecuredInitiatorContext()
+	m.FindOrCreateUnsecuredContext(fabric.NodeID(0x1234))
+
+	if m.UnsecuredSessionCount() != 2 {
+		t.Fatalf("UnsecuredSessionCount() = %d, want 2", m.UnsecuredSessionCount())
+	}
+
+	// Clear all
+	m.Clear()
+
+	if m.SecureSessionCount() != 0 {
+		t.Errorf("SecureSessionCount() after Clear = %d, want 0", m.SecureSessionCount())
+	}
+	if m.UnsecuredSessionCount() != 0 {
+		t.Errorf("UnsecuredSessionCount() after Clear = %d, want 0", m.UnsecuredSessionCount())
+	}
+}

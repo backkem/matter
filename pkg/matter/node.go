@@ -406,9 +406,11 @@ func (n *Node) Stop() error {
 	})
 
 	// Close commissioning window if open
+	// Set to nil first so callback sees it's already cleaned up
 	if n.commWindow != nil {
-		n.commWindow.Close()
+		cw := n.commWindow
 		n.commWindow = nil
+		cw.Close()
 	}
 
 	// Stop in reverse order
@@ -524,6 +526,30 @@ func (n *Node) Fabrics() []*fabric.FabricInfo {
 		return nil
 	})
 	return result
+}
+
+// SessionManager returns the node's session manager.
+// Exposed for testing and advanced use cases.
+func (n *Node) SessionManager() *session.Manager {
+	return n.sessionMgr
+}
+
+// SecureChannelManager returns the node's secure channel manager.
+// Exposed for testing and advanced use cases.
+func (n *Node) SecureChannelManager() *securechannel.Manager {
+	return n.scMgr
+}
+
+// ExchangeManager returns the node's exchange manager.
+// Exposed for testing and advanced use cases.
+func (n *Node) ExchangeManager() *exchange.Manager {
+	return n.exchangeMgr
+}
+
+// TransportManager returns the node's transport manager.
+// Exposed for testing and advanced use cases.
+func (n *Node) TransportManager() *transport.Manager {
+	return n.transportMgr
 }
 
 // RemoveFabric removes the node from a fabric.

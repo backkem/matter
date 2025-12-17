@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"sync"
 
+	"github.com/backkem/matter/pkg/fabric"
 	"github.com/backkem/matter/pkg/message"
 	"github.com/backkem/matter/pkg/securechannel"
 	"github.com/backkem/matter/pkg/session"
@@ -152,9 +153,25 @@ func (m *Manager) OnMessageReceived(msg *transport.ReceivedMessage) error {
 		if err != nil {
 			return ErrInvalidMessage
 		}
-		// Use a placeholder unsecured session context
-		// In practice, the session manager should track unsecured contexts
-		sess = nil // Will need special handling
+
+		// Per Spec 4.13.2.1: Look up or create UnsecuredContext by source node ID
+		// Source must be present for unsecured messages
+		if !header.SourcePresent {
+			return ErrInvalidMessage
+		}
+
+		sourceNodeID := fabric.NodeID(header.SourceNodeID)
+		unsecuredCtx, err := m.config.SessionManager.FindOrCreateUnsecuredContext(sourceNodeID)
+		if err != nil {
+			return err
+		}
+
+		// Check message counter for replay
+		if !unsecuredCtx.CheckCounter(header.MessageCounter) {
+			return ErrInvalidMessage
+		}
+
+		sess = unsecuredCtx
 	} else {
 		// Secure session - decrypt
 		secureCtx := m.config.SessionManager.FindSecureContext(header.SessionID)
@@ -434,8 +451,7 @@ func (m *Manager) sendMessageInternal(ctx *ExchangeContext, proto *message.Proto
 	secureSession, isSecure := sess.(SecureSessionContext)
 	if !isSecure {
 		// Unsecured session - encode without encryption
-		// TODO: Implement unsecured send
-		return nil
+		return m.sendUnsecuredMessage(ctx, sess, proto, payload)
 	}
 
 	// Build message header
@@ -535,6 +551,63 @@ func (m *Manager) removeExchange(ctx *ExchangeContext) {
 	if delegate := ctx.GetDelegate(); delegate != nil {
 		delegate.OnClose(ctx)
 	}
+}
+
+// sendUnsecuredMessage sends a message on an unsecured session.
+// Unsecured sessions are used during PASE/CASE handshake before encryption is established.
+// Per Spec 4.13.2.1: Session ID = 0 and Session Type = Unicast (0).
+func (m *Manager) sendUnsecuredMessage(ctx *ExchangeContext, sess SessionContext, proto *message.ProtocolHeader, payload []byte) error {
+	// Get source node ID from unsecured context
+	unsecuredCtx, ok := sess.(*session.UnsecuredContext)
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	// Get next global message counter
+	counter, err := m.config.SessionManager.NextGlobalCounter()
+	if err != nil {
+		return err
+	}
+
+	// Build unsecured message header
+	// Per Spec 4.4.1: Session ID = 0, Session Type = Unicast for unsecured
+	header := &message.MessageHeader{
+		SessionID:      0, // Unsecured session
+		SessionType:    message.SessionTypeUnicast,
+		MessageCounter: counter,
+		SourceNodeID:   uint64(unsecuredCtx.EphemeralNodeID()),
+		SourcePresent:  true, // Required for unsecured messages
+	}
+
+	// Build frame and encode
+	frame := &message.Frame{
+		Header:   *header,
+		Protocol: *proto,
+		Payload:  payload,
+	}
+	encoded := frame.EncodeUnsecured()
+
+	// Track for retransmission if reliable
+	if proto.Reliability {
+		peerAddr := ctx.PeerAddress()
+		params := sess.GetParams()
+		baseInterval := params.IdleInterval
+
+		key := ctx.GetKey()
+		err = m.retransmitTable.Add(key, counter, encoded, peerAddr, baseInterval,
+			func(entry *RetransmitEntry) {
+				m.onRetransmitTimeout(entry)
+			})
+		if err != nil {
+			return err
+		}
+
+		ctx.SetPendingRetransmit(counter)
+	}
+
+	// Send via transport
+	peerAddr := ctx.PeerAddress()
+	return m.config.TransportManager.Send(encoded, peerAddr)
 }
 
 // GetExchange returns an exchange by key, if it exists.

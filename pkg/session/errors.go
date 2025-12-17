@@ -40,4 +40,7 @@ var (
 
 	// ErrGroupPeerTableFull is returned when no more group peers can be tracked.
 	ErrGroupPeerTableFull = errors.New("session: group peer table full")
+
+	// ErrInvalidNodeID is returned when a node ID is invalid (0 for unsecured sessions).
+	ErrInvalidNodeID = errors.New("session: invalid node ID")
 )

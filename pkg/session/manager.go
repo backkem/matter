@@ -16,10 +16,12 @@ const DefaultMaxGroupPeers = 64
 //
 // The Manager maintains:
 //   - A table of secure session contexts (PASE/CASE)
+//   - A table of unsecured session contexts (for PASE/CASE handshake)
 //   - A table of group peer counters for anti-replay
 //   - A global message counter for unsecured messages
 type Manager struct {
 	secure        *Table
+	unsecured     map[fabric.NodeID]*UnsecuredContext // Keyed by ephemeral node ID
 	groupPeers    *GroupPeerTable
 	globalCounter *message.GlobalCounter
 
@@ -48,6 +50,7 @@ func NewManager(config ManagerConfig) *Manager {
 
 	return &Manager{
 		secure:        NewTable(config.MaxSessions),
+		unsecured:     make(map[fabric.NodeID]*UnsecuredContext),
 		groupPeers:    NewGroupPeerTable(config.MaxGroupPeers),
 		globalCounter: message.NewGlobalCounter(),
 	}
@@ -100,6 +103,91 @@ func (m *Manager) SecureSessionCount() int {
 // IsSecureTableFull returns true if no more secure sessions can be added.
 func (m *Manager) IsSecureTableFull() bool {
 	return m.secure.IsFull()
+}
+
+// FindOrCreateUnsecuredContext finds or creates an UnsecuredContext for incoming messages.
+// Per Spec 4.13.2.1:
+//   - Locate any context with matching Ephemeral Initiator Node ID (sourceNodeID)
+//   - If not found and sourceNodeID is valid, create a new responder context
+//   - Returns nil if sourceNodeID is invalid (0)
+//
+// This is used by pkg/exchange when receiving unencrypted messages (SessionID == 0).
+func (m *Manager) FindOrCreateUnsecuredContext(sourceNodeID fabric.NodeID) (*UnsecuredContext, error) {
+	if sourceNodeID == 0 {
+		return nil, ErrInvalidNodeID
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Look for existing context with this ephemeral initiator node ID
+	if ctx, exists := m.unsecured[sourceNodeID]; exists {
+		return ctx, nil
+	}
+
+	// Create new responder context per Spec 4.13.2.1
+	ctx, err := NewUnsecuredContext(SessionRoleResponder)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record initiator's ephemeral node ID
+	ctx.SetEphemeralNodeID(sourceNodeID)
+
+	m.unsecured[sourceNodeID] = ctx
+	return ctx, nil
+}
+
+// CreateUnsecuredInitiatorContext creates a new UnsecuredContext for the initiator.
+// Per Spec 4.13.2.1: Called when sending the first message of an unencrypted exchange.
+// The ephemeral node ID is randomly generated and guaranteed not to collide with
+// any ongoing unsecured sessions.
+func (m *Manager) CreateUnsecuredInitiatorContext() (*UnsecuredContext, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Try to create a context with non-colliding ephemeral ID
+	// Per Spec: "SHALL select an ID that does not conflict with any ephemeral node IDs
+	// for any other ongoing unsecured sessions opened by the initiator"
+	const maxAttempts = 100
+	for i := 0; i < maxAttempts; i++ {
+		ctx, err := NewUnsecuredContext(SessionRoleInitiator)
+		if err != nil {
+			return nil, err
+		}
+
+		ephemeralID := ctx.EphemeralNodeID()
+		if _, exists := m.unsecured[ephemeralID]; !exists {
+			// No collision - use this context
+			m.unsecured[ephemeralID] = ctx
+			return ctx, nil
+		}
+	}
+
+	return nil, ErrSessionTableFull
+}
+
+// FindUnsecuredContext finds an UnsecuredContext by ephemeral node ID.
+// Returns nil if not found.
+func (m *Manager) FindUnsecuredContext(ephemeralNodeID fabric.NodeID) *UnsecuredContext {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.unsecured[ephemeralNodeID]
+}
+
+// RemoveUnsecuredContext removes an UnsecuredContext.
+// Called after successful session establishment or on error.
+func (m *Manager) RemoveUnsecuredContext(ephemeralNodeID fabric.NodeID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.unsecured, ephemeralNodeID)
+}
+
+// UnsecuredSessionCount returns the number of active unsecured sessions.
+func (m *Manager) UnsecuredSessionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.unsecured)
 }
 
 // GlobalCounter returns the global message counter for unsecured messages.
@@ -166,6 +254,7 @@ func (m *Manager) Clear() {
 
 	// Clear tables
 	m.secure.Clear()
+	m.unsecured = make(map[fabric.NodeID]*UnsecuredContext)
 	m.groupPeers.Clear()
 
 	// Reset global counter
