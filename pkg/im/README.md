@@ -150,3 +150,71 @@ mgr.PublishEvent(im.EventRecord{
 reporter := im.NewEventReporter(mgr)
 report := reporter.BuildUnsolicitedReport(fabricIndex, []im.EventPath{...})
 ```
+
+## Test Infrastructure
+
+### SecureTestIMPair
+
+Two connected IM engines with encrypted sessions for E2E testing.
+
+```
+  Client (0)                          Server (1)
+  ──────────                          ──────────
+  im.Client                           im.Engine
+      │                                   │
+      ▼                                   ▼
+  exchange.Manager ◀──── Pipe ────▶ exchange.Manager
+      │                                   │
+      ▼                                   ▼
+  SecureContext(1,2)               SecureContext(2,1)
+```
+
+```go
+pair, _ := im.NewSecureTestIMPair(im.SecureTestIMPairConfig{
+    Dispatchers: [2]im.Dispatcher{nil, mockDispatcher},
+})
+defer pair.Close()
+
+// Client sends InvokeRequest to Server
+result, err := pair.Client(0).InvokeWithStatus(
+    ctx,
+    pair.Session(0),     // Client's secure session
+    pair.PeerAddress(1), // Server's address
+    1, 0x0006, 0x01,     // Endpoint, Cluster, Command
+    nil,
+)
+
+// Verify server received
+calls := mockDispatcher.InvokeCalls()
+```
+
+### MockDispatcher
+
+Records IM operations for test verification.
+
+```go
+mock := im.NewMockDispatcher()
+
+// Configure responses
+mock.SetInvokeResult(responseData, nil)
+mock.SetReadResult(true, nil)
+
+// After test
+calls := mock.InvokeCalls()   // []InvokeCall
+reads := mock.ReadCalls()     // []ReadCall
+mock.Reset()
+```
+
+### Bidirectional
+
+```go
+pair, _ := im.NewSecureTestIMPair(im.SecureTestIMPairConfig{
+    Dispatchers: [2]im.Dispatcher{mockClient, mockServer},
+})
+
+// Client → Server
+pair.Client(0).InvokeWithStatus(ctx, pair.Session(0), pair.PeerAddress(1), ...)
+
+// Server → Client
+pair.Client(1).InvokeWithStatus(ctx, pair.Session(1), pair.PeerAddress(0), ...)
+```

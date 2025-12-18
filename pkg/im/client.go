@@ -13,6 +13,7 @@ import (
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/tlv"
 	"github.com/backkem/matter/pkg/transport"
+	"github.com/pion/logging"
 )
 
 // Client errors.
@@ -36,6 +37,7 @@ const DefaultRequestTimeout = 30 * time.Second
 type Client struct {
 	exchangeManager *exchange.Manager
 	timeout         time.Duration
+	log             logging.LeveledLogger
 }
 
 // ClientConfig configures the Client.
@@ -46,6 +48,10 @@ type ClientConfig struct {
 
 	// Timeout for requests. Defaults to DefaultRequestTimeout if zero.
 	Timeout time.Duration
+
+	// LoggerFactory creates loggers for the client.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // NewClient creates a new IM client.
@@ -55,10 +61,16 @@ func NewClient(config ClientConfig) *Client {
 		timeout = DefaultRequestTimeout
 	}
 
-	return &Client{
+	c := &Client{
 		exchangeManager: config.ExchangeManager,
 		timeout:         timeout,
 	}
+
+	if config.LoggerFactory != nil {
+		c.log = config.LoggerFactory.NewLogger("im-client")
+	}
+
+	return c
 }
 
 // InvokeRequest sends a command to a cluster and waits for the response.
@@ -111,8 +123,13 @@ func (c *Client) InvokeRequest(
 		return nil, err
 	}
 
+	if c.log != nil {
+		c.log.Debugf("InvokeRequest: endpoint=%d, cluster=0x%04x, command=0x%02x",
+			endpointID, clusterID, commandID)
+	}
+
 	// Create response handler
-	handler := newInvokeResponseHandler()
+	handler := newInvokeResponseHandler(c.log)
 
 	// Create exchange
 	exch, err := c.exchangeManager.NewExchange(
@@ -136,9 +153,16 @@ func (c *Client) InvokeRequest(
 	// Wait for response
 	select {
 	case <-ctx.Done():
+		if c.log != nil {
+			c.log.Warnf("InvokeRequest timeout: endpoint=%d, cluster=0x%04x, command=0x%02x",
+				endpointID, clusterID, commandID)
+		}
 		return nil, ErrClientTimeout
 	case result := <-handler.resultCh:
 		if result.err != nil {
+			if c.log != nil {
+				c.log.Warnf("InvokeRequest error: %v", result.err)
+			}
 			return nil, result.err
 		}
 		return result.data, nil
@@ -199,8 +223,13 @@ func (c *Client) InvokeWithStatus(
 		return nil, err
 	}
 
+	if c.log != nil {
+		c.log.Debugf("InvokeWithStatus: endpoint=%d, cluster=0x%04x, command=0x%02x",
+			endpointID, clusterID, commandID)
+	}
+
 	// Create response handler
-	handler := newInvokeResponseHandler()
+	handler := newInvokeResponseHandler(c.log)
 
 	// Create exchange
 	exch, err := c.exchangeManager.NewExchange(
@@ -224,9 +253,16 @@ func (c *Client) InvokeWithStatus(
 	// Wait for response
 	select {
 	case <-ctx.Done():
+		if c.log != nil {
+			c.log.Warnf("InvokeWithStatus timeout: endpoint=%d, cluster=0x%04x, command=0x%02x",
+				endpointID, clusterID, commandID)
+		}
 		return nil, ErrClientTimeout
 	case result := <-handler.resultCh:
 		if result.err != nil {
+			if c.log != nil {
+				c.log.Warnf("InvokeWithStatus error: %v", result.err)
+			}
 			return nil, result.err
 		}
 		return result.invokeResult, nil
@@ -271,8 +307,13 @@ func (c *Client) ReadAttribute(
 		return nil, err
 	}
 
+	if c.log != nil {
+		c.log.Debugf("ReadAttribute: endpoint=%d, cluster=0x%04x, attribute=0x%04x",
+			endpointID, clusterID, attributeID)
+	}
+
 	// Create response handler
-	handler := newReadResponseHandler()
+	handler := newReadResponseHandler(c.log)
 
 	// Create exchange
 	exch, err := c.exchangeManager.NewExchange(
@@ -296,9 +337,16 @@ func (c *Client) ReadAttribute(
 	// Wait for response
 	select {
 	case <-ctx.Done():
+		if c.log != nil {
+			c.log.Warnf("ReadAttribute timeout: endpoint=%d, cluster=0x%04x, attribute=0x%04x",
+				endpointID, clusterID, attributeID)
+		}
 		return nil, ErrClientTimeout
 	case result := <-handler.resultCh:
 		if result.err != nil {
+			if c.log != nil {
+				c.log.Warnf("ReadAttribute error: %v", result.err)
+			}
 			return nil, result.err
 		}
 		return result.data, nil
@@ -316,11 +364,13 @@ type responseResult struct {
 type invokeResponseHandler struct {
 	resultCh chan responseResult
 	once     sync.Once
+	log      logging.LeveledLogger
 }
 
-func newInvokeResponseHandler() *invokeResponseHandler {
+func newInvokeResponseHandler(log logging.LeveledLogger) *invokeResponseHandler {
 	return &invokeResponseHandler{
 		resultCh: make(chan responseResult, 1),
+		log:      log,
 	}
 }
 
@@ -332,12 +382,21 @@ func (h *invokeResponseHandler) OnMessage(
 ) ([]byte, error) {
 	opcode := imsg.Opcode(header.ProtocolOpcode)
 
+	if h.log != nil {
+		h.log.Tracef("invokeResponseHandler received opcode=%d (%s), exchangeID=%d, payloadLen=%d",
+			opcode, opcode.String(), header.ExchangeID, len(payload))
+	}
+
 	switch opcode {
 	case imsg.OpcodeInvokeResponse:
 		h.handleInvokeResponse(payload)
 	case imsg.OpcodeStatusResponse:
 		h.handleStatusResponse(payload)
 	default:
+		if h.log != nil {
+			h.log.Warnf("invokeResponseHandler unexpected opcode=%d (%s), expected InvokeResponse or StatusResponse",
+				opcode, opcode.String())
+		}
 		h.sendError(ErrUnexpectedResponse)
 	}
 
@@ -416,11 +475,13 @@ func (h *invokeResponseHandler) sendError(err error) {
 type readResponseHandler struct {
 	resultCh chan responseResult
 	once     sync.Once
+	log      logging.LeveledLogger
 }
 
-func newReadResponseHandler() *readResponseHandler {
+func newReadResponseHandler(log logging.LeveledLogger) *readResponseHandler {
 	return &readResponseHandler{
 		resultCh: make(chan responseResult, 1),
+		log:      log,
 	}
 }
 
@@ -432,12 +493,21 @@ func (h *readResponseHandler) OnMessage(
 ) ([]byte, error) {
 	opcode := imsg.Opcode(header.ProtocolOpcode)
 
+	if h.log != nil {
+		h.log.Tracef("readResponseHandler received opcode=%d (%s), exchangeID=%d, payloadLen=%d",
+			opcode, opcode.String(), header.ExchangeID, len(payload))
+	}
+
 	switch opcode {
 	case imsg.OpcodeReportData:
 		h.handleReportData(payload)
 	case imsg.OpcodeStatusResponse:
 		h.handleStatusResponse(payload)
 	default:
+		if h.log != nil {
+			h.log.Warnf("readResponseHandler unexpected opcode=%d (%s), expected ReportData or StatusResponse",
+				opcode, opcode.String())
+		}
 		h.sendError(ErrUnexpectedResponse)
 	}
 

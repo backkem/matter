@@ -1,8 +1,6 @@
 package matter
 
 import (
-	"fmt"
-
 	"github.com/backkem/matter/pkg/exchange"
 	"github.com/backkem/matter/pkg/im"
 	imsg "github.com/backkem/matter/pkg/im/message"
@@ -37,24 +35,17 @@ func (a *secureChannelAdapter) handleSecureChannel(ctx *exchange.ExchangeContext
 		Payload: payload,
 	}
 
-	fmt.Printf("[Device SC Adapter] exchangeID=%d, received opcode=%s\n", ctx.ID, msg.Opcode)
-
 	response, err := a.manager.Route(ctx.ID, msg)
 	if err != nil {
-		fmt.Printf("[Device SC Adapter] Route error: %v\n", err)
 		return nil, err
 	}
 
 	if response == nil {
-		fmt.Printf("[Device SC Adapter] Route returned nil response\n")
 		return nil, nil
 	}
 
-	fmt.Printf("[Device SC Adapter] Sending response opcode=%s\n", response.Opcode)
-
 	// Send response with the opcode from the Message
 	if err := ctx.SendMessage(uint8(response.Opcode), response.Payload, true); err != nil {
-		fmt.Printf("[Device SC Adapter] SendMessage error: %v\n", err)
 		return nil, err
 	}
 

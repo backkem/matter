@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/backkem/matter/pkg/message"
+	"github.com/pion/logging"
 )
 
 // DefaultPort is the default Matter port (Spec Section 2.5.6.3).
@@ -19,6 +20,7 @@ type UDP struct {
 	handler MessageHandler
 	closeCh chan struct{}
 	wg      sync.WaitGroup
+	log     logging.LeveledLogger
 
 	mu      sync.RWMutex
 	started bool
@@ -38,6 +40,10 @@ type UDPConfig struct {
 	// MessageHandler is called for each received message.
 	// Required.
 	MessageHandler MessageHandler
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // NewUDP creates a new UDP transport with the given configuration.
@@ -50,6 +56,11 @@ func NewUDP(config UDPConfig) (*UDP, error) {
 		conn:    config.Conn,
 		handler: config.MessageHandler,
 		closeCh: make(chan struct{}),
+	}
+
+	// Create logger
+	if config.LoggerFactory != nil {
+		u.log = config.LoggerFactory.NewLogger("transport-udp")
 	}
 
 	// Create connection if not provided
@@ -84,6 +95,10 @@ func (u *UDP) Start() error {
 	u.started = true
 	u.mu.Unlock()
 
+	if u.log != nil {
+		u.log.Infof("starting UDP transport on %s", u.conn.LocalAddr())
+	}
+
 	u.wg.Add(1)
 	go u.readLoop()
 
@@ -99,6 +114,10 @@ func (u *UDP) Stop() error {
 	}
 	u.closed = true
 	u.mu.Unlock()
+
+	if u.log != nil {
+		u.log.Info("stopping UDP transport")
+	}
 
 	close(u.closeCh)
 
@@ -160,8 +179,9 @@ func (u *UDP) readLoop() {
 			case <-u.closeCh:
 				return
 			default:
-				// Log error and continue for recoverable errors
-				// For now, just continue
+				if u.log != nil {
+					u.log.Warnf("UDP read error: %v", err)
+				}
 				continue
 			}
 		}

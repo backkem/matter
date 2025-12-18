@@ -9,6 +9,7 @@ import (
 	imsg "github.com/backkem/matter/pkg/im/message"
 	"github.com/backkem/matter/pkg/message"
 	"github.com/backkem/matter/pkg/tlv"
+	"github.com/pion/logging"
 )
 
 // ProtocolID is the Interaction Model protocol ID.
@@ -46,6 +47,8 @@ type Engine struct {
 	// maxPayload for chunked responses
 	maxPayload int
 
+	log logging.LeveledLogger
+
 	mu sync.Mutex
 }
 
@@ -62,6 +65,10 @@ type EngineConfig struct {
 	// MaxPayload is the maximum payload size for responses.
 	// Defaults to DefaultMaxPayload if 0.
 	MaxPayload int
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // NewEngine creates a new IM engine.
@@ -76,7 +83,7 @@ func NewEngine(config EngineConfig) *Engine {
 		dispatcher = NullDispatcher{}
 	}
 
-	return &Engine{
+	e := &Engine{
 		dispatcher:    dispatcher,
 		aclChecker:    config.ACLChecker,
 		maxPayload:    maxPayload,
@@ -84,10 +91,20 @@ func NewEngine(config EngineConfig) *Engine {
 		writeHandler:  NewWriteHandler(dispatcher),
 		invokeHandler: NewInvokeHandler(nil, maxPayload), // Handler set per-request
 	}
+
+	if config.LoggerFactory != nil {
+		e.log = config.LoggerFactory.NewLogger("im")
+	}
+
+	return e
 }
 
 // OnMessage implements exchange.ExchangeDelegate.
 // This is the main entry point for IM messages.
+//
+// The engine sends responses directly via ctx.SendMessage with the correct
+// response opcode (matching the C++ SDK architecture), then returns (nil, nil)
+// so the exchange layer doesn't send again.
 //
 // Spec: 8.2.4 "Action" - defines valid opcodes
 // C++ Reference: InteractionModelEngine::OnMessageReceived
@@ -98,30 +115,65 @@ func (e *Engine) OnMessage(
 ) ([]byte, error) {
 	opcode := imsg.Opcode(header.ProtocolOpcode)
 
+	var responsePayload []byte
+	var responseOpcode imsg.Opcode
+	var err error
+
 	switch opcode {
 	case imsg.OpcodeReadRequest:
-		return e.handleReadRequest(ctx, payload)
+		responsePayload, err = e.handleReadRequest(ctx, payload)
+		responseOpcode = imsg.OpcodeReportData
 
 	case imsg.OpcodeWriteRequest:
-		return e.handleWriteRequest(ctx, payload)
+		responsePayload, err = e.handleWriteRequest(ctx, payload)
+		responseOpcode = imsg.OpcodeWriteResponse
 
 	case imsg.OpcodeInvokeRequest:
-		return e.handleInvokeRequest(ctx, payload)
+		responsePayload, err = e.handleInvokeRequest(ctx, payload)
+		responseOpcode = imsg.OpcodeInvokeResponse
 
 	case imsg.OpcodeStatusResponse:
+		// StatusResponse handling may return different response types
 		return e.handleStatusResponse(ctx, payload)
 
 	case imsg.OpcodeSubscribeRequest:
 		// Not implemented in simplified engine
-		return e.encodeStatusResponse(imsg.StatusUnsupportedAccess)
+		responsePayload, _ = e.encodeStatusResponse(imsg.StatusUnsupportedAccess)
+		responseOpcode = imsg.OpcodeStatusResponse
 
 	case imsg.OpcodeTimedRequest:
 		// Not implemented in simplified engine
-		return e.encodeStatusResponse(imsg.StatusUnsupportedAccess)
+		responsePayload, _ = e.encodeStatusResponse(imsg.StatusUnsupportedAccess)
+		responseOpcode = imsg.OpcodeStatusResponse
 
 	default:
-		return e.encodeStatusResponse(imsg.StatusInvalidAction)
+		responsePayload, _ = e.encodeStatusResponse(imsg.StatusInvalidAction)
+		responseOpcode = imsg.OpcodeStatusResponse
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// No response to send (e.g., SuppressResponse was set)
+	if responsePayload == nil {
+		return nil, nil
+	}
+
+	// If context is nil (unit tests), return payload directly for verification
+	if ctx == nil {
+		return responsePayload, nil
+	}
+
+	// Send response directly with correct opcode
+	// C++ Reference: CommandResponseSender::SendCommandResponse calls
+	// mExchangeCtx->SendMessage(MsgType::InvokeCommandResponse, ...)
+	if sendErr := ctx.SendMessage(uint8(responseOpcode), responsePayload, true); sendErr != nil {
+		return nil, sendErr
+	}
+
+	// Return nil so exchange layer doesn't send again
+	return nil, nil
 }
 
 // OnClose implements exchange.ExchangeDelegate.
@@ -234,6 +286,7 @@ func (e *Engine) handleInvokeRequest(ctx *exchange.ExchangeContext, payload []by
 
 // handleStatusResponse processes a StatusResponseMessage.
 // Used for chunked response flow control.
+// This method sends responses directly with correct opcodes.
 func (e *Engine) handleStatusResponse(ctx *exchange.ExchangeContext, payload []byte) ([]byte, error) {
 	// Decode status
 	statusMsg, err := DecodeStatusResponse(payload)
@@ -248,10 +301,15 @@ func (e *Engine) handleStatusResponse(ctx *exchange.ExchangeContext, payload []b
 	if e.readHandler.State() == ReadHandlerStateSendingReport {
 		resp, err := e.readHandler.HandleStatusResponse(statusMsg.Status)
 		if err != nil {
-			return e.encodeStatusResponse(ErrorToStatus(err))
+			responsePayload, _ := e.encodeStatusResponse(ErrorToStatus(err))
+			return e.sendOrReturn(ctx, uint8(imsg.OpcodeStatusResponse), responsePayload)
 		}
 		if resp != nil {
-			return EncodeReportData(resp)
+			responsePayload, err := EncodeReportData(resp)
+			if err != nil {
+				return nil, err
+			}
+			return e.sendOrReturn(ctx, uint8(imsg.OpcodeReportData), responsePayload)
 		}
 		return nil, nil
 	}
@@ -260,15 +318,31 @@ func (e *Engine) handleStatusResponse(ctx *exchange.ExchangeContext, payload []b
 	if e.invokeHandler.State() == InvokeHandlerStateSendingResponse {
 		resp, err := e.invokeHandler.HandleStatusResponse(statusMsg.Status)
 		if err != nil {
-			return e.encodeStatusResponse(ErrorToStatus(err))
+			responsePayload, _ := e.encodeStatusResponse(ErrorToStatus(err))
+			return e.sendOrReturn(ctx, uint8(imsg.OpcodeStatusResponse), responsePayload)
 		}
 		if resp != nil {
-			return EncodeInvokeResponse(resp)
+			responsePayload, err := EncodeInvokeResponse(resp)
+			if err != nil {
+				return nil, err
+			}
+			return e.sendOrReturn(ctx, uint8(imsg.OpcodeInvokeResponse), responsePayload)
 		}
 		return nil, nil
 	}
 
 	// No handler expecting status response
+	return nil, nil
+}
+
+// sendOrReturn either sends via exchange context or returns payload for unit tests.
+func (e *Engine) sendOrReturn(ctx *exchange.ExchangeContext, opcode uint8, payload []byte) ([]byte, error) {
+	if ctx == nil {
+		return payload, nil
+	}
+	if err := ctx.SendMessage(opcode, payload, true); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 

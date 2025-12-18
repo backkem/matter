@@ -17,6 +17,7 @@ import (
 
 	"github.com/backkem/matter/pkg/commissioning"
 	"github.com/backkem/matter/pkg/fabric"
+	"github.com/backkem/matter/pkg/im"
 	"github.com/backkem/matter/pkg/matter"
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/transport"
@@ -277,4 +278,84 @@ func (c *Controller) CommissionDevice(
 
 	// Establish PASE session
 	return paseClient.Establish(ctx, peerAddr, passcode)
+}
+
+// SendCommand sends a command to a cluster on a commissioned device.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout
+//   - sess: Secure session to use
+//   - peerAddr: Device network address
+//   - endpointID: Target endpoint
+//   - clusterID: Target cluster ID
+//   - commandID: Command ID to invoke
+//   - requestData: TLV-encoded command fields (nil for commands with no fields)
+//
+// Returns the command response status.
+func (c *Controller) SendCommand(
+	ctx context.Context,
+	sess *session.SecureContext,
+	peerAddr transport.PeerAddress,
+	endpointID uint16,
+	clusterID uint32,
+	commandID uint32,
+	requestData []byte,
+) (*im.InvokeResult, error) {
+	c.mu.RLock()
+	if !c.started {
+		c.mu.RUnlock()
+		return nil, ErrNotStarted
+	}
+	c.mu.RUnlock()
+
+	exchMgr := c.node.ExchangeManager()
+	if exchMgr == nil {
+		return nil, errors.New("controller: exchange manager not available")
+	}
+
+	client := im.NewClient(im.ClientConfig{
+		ExchangeManager: exchMgr,
+		LoggerFactory:   c.node.LoggerFactory(),
+	})
+
+	return client.InvokeWithStatus(ctx, sess, peerAddr, endpointID, clusterID, commandID, requestData)
+}
+
+// ReadAttribute reads an attribute from a cluster on a commissioned device.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout
+//   - sess: Secure session to use
+//   - peerAddr: Device network address
+//   - endpointID: Target endpoint
+//   - clusterID: Target cluster ID
+//   - attributeID: Attribute ID to read
+//
+// Returns the TLV-encoded attribute value.
+func (c *Controller) ReadAttribute(
+	ctx context.Context,
+	sess *session.SecureContext,
+	peerAddr transport.PeerAddress,
+	endpointID uint16,
+	clusterID uint32,
+	attributeID uint32,
+) ([]byte, error) {
+	c.mu.RLock()
+	if !c.started {
+		c.mu.RUnlock()
+		return nil, ErrNotStarted
+	}
+	c.mu.RUnlock()
+
+	exchMgr := c.node.ExchangeManager()
+	if exchMgr == nil {
+		return nil, errors.New("controller: exchange manager not available")
+	}
+
+	client := im.NewClient(im.ClientConfig{
+		ExchangeManager: exchMgr,
+		LoggerFactory:   c.node.LoggerFactory(),
+	})
+
+	return client.ReadAttribute(ctx, sess, peerAddr, endpointID, clusterID, attributeID)
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/backkem/matter/pkg/fabric"
+	"github.com/pion/logging"
 )
 
 // ManagerConfig holds configuration for the discovery Manager.
@@ -35,6 +36,10 @@ type ManagerConfig struct {
 
 	// MDNSResolver is the mDNS resolver implementation (for testing).
 	MDNSResolver MDNSResolver
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // Manager coordinates DNS-SD advertising and resolution for Matter.
@@ -42,6 +47,7 @@ type Manager struct {
 	config     ManagerConfig
 	advertiser *Advertiser
 	resolver   *Resolver
+	log        logging.LeveledLogger
 
 	mu     sync.RWMutex
 	closed bool
@@ -81,11 +87,17 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		return nil, err
 	}
 
-	return &Manager{
+	m := &Manager{
 		config:     config,
 		advertiser: advertiser,
 		resolver:   resolver,
-	}, nil
+	}
+
+	if config.LoggerFactory != nil {
+		m.log = config.LoggerFactory.NewLogger("discovery")
+	}
+
+	return m, nil
 }
 
 // Close stops all services and releases resources.

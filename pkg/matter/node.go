@@ -20,6 +20,7 @@ import (
 	"github.com/backkem/matter/pkg/securechannel/pase"
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/transport"
+	"github.com/pion/logging"
 )
 
 // Node represents a running Matter node (device or controller).
@@ -27,6 +28,7 @@ import (
 type Node struct {
 	config NodeConfig
 	state  NodeState
+	log    logging.LeveledLogger
 
 	// Core managers
 	fabricTable  *fabric.Table
@@ -82,6 +84,11 @@ func NewNode(config NodeConfig) (*Node, error) {
 		state:     NodeStateUninitialized,
 		endpoints: make(map[datamodel.EndpointID]*Endpoint),
 		stopCh:    make(chan struct{}),
+	}
+
+	// Initialize logger
+	if config.LoggerFactory != nil {
+		n.log = config.LoggerFactory.NewLogger("matter")
 	}
 
 	// Initialize data model
@@ -253,6 +260,10 @@ func (n *Node) Start(ctx context.Context) error {
 		n.openCommissioningWindowLocked(3 * time.Minute)
 	}
 
+	if n.log != nil {
+		n.log.Infof("node started, state=%s", n.state)
+	}
+
 	// Notify callback
 	if n.config.OnStateChanged != nil {
 		n.config.OnStateChanged(n.state)
@@ -294,6 +305,7 @@ func (n *Node) startTransport() error {
 		UDPConn:        udpConn,
 		TCPListener:    tcpListener,
 		MessageHandler: handler,
+		LoggerFactory:  n.config.LoggerFactory,
 	})
 	if err != nil {
 		return err
@@ -315,6 +327,7 @@ func (n *Node) startExchange() error {
 	n.exchangeMgr = exchange.NewManager(exchange.ManagerConfig{
 		SessionManager:   n.sessionMgr,
 		TransportManager: n.transportMgr,
+		LoggerFactory:    n.config.LoggerFactory,
 	})
 	return nil
 }
@@ -337,6 +350,7 @@ func (n *Node) registerProtocols() {
 			OnSessionError:       n.onSessionError,
 			OnSessionClosed:      n.onSessionClosed,
 		},
+		LoggerFactory: n.config.LoggerFactory,
 	})
 
 	// Create ACL checker for IM
@@ -344,8 +358,9 @@ func (n *Node) registerProtocols() {
 
 	// Create IM engine
 	n.imEngine = im.NewEngine(im.EngineConfig{
-		Dispatcher: n.dispatcher,
-		ACLChecker: aclChecker,
+		Dispatcher:    n.dispatcher,
+		ACLChecker:    aclChecker,
+		LoggerFactory: n.config.LoggerFactory,
 	})
 
 	// Register with exchange manager
@@ -357,7 +372,8 @@ func (n *Node) registerProtocols() {
 func (n *Node) startDiscovery() error {
 	var err error
 	n.discoveryMgr, err = discovery.NewManager(discovery.ManagerConfig{
-		Port: n.config.Port,
+		Port:          n.config.Port,
+		LoggerFactory: n.config.LoggerFactory,
 	})
 	return err
 }
@@ -422,6 +438,10 @@ func (n *Node) Stop() error {
 	n.saveState()
 
 	n.state = NodeStateStopped
+
+	if n.log != nil {
+		n.log.Info("node stopped")
+	}
 
 	if n.config.OnStateChanged != nil {
 		n.config.OnStateChanged(n.state)
@@ -552,6 +572,12 @@ func (n *Node) TransportManager() *transport.Manager {
 	return n.transportMgr
 }
 
+// LoggerFactory returns the node's logger factory.
+// Returns nil if no logger factory was configured.
+func (n *Node) LoggerFactory() logging.LoggerFactory {
+	return n.config.LoggerFactory
+}
+
 // RemoveFabric removes the node from a fabric.
 func (n *Node) RemoveFabric(index fabric.FabricIndex) error {
 	n.mu.Lock()
@@ -592,8 +618,9 @@ func (n *Node) onSessionEstablished(ctx *session.SecureContext) {
 }
 
 func (n *Node) onSessionError(err error, stage string) {
-	// Log error
-	// TODO: Add logging
+	if n.log != nil {
+		n.log.Warnf("session error at %s: %v", stage, err)
+	}
 }
 
 func (n *Node) onSessionClosed(localSessionID uint16) {

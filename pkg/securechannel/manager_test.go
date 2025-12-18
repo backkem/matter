@@ -505,5 +505,41 @@ func TestPASEHandshake(t *testing.T) {
 		t.Errorf("Responder should have 1 secure session, got %d", responderSessionMgr.SecureSessionCount())
 	}
 
+	// Verify peer session IDs are correctly set (cross-matched)
+	var initiatorSession, responderSession *session.SecureContext
+	initiatorSessionMgr.ForEachSecureSession(func(s *session.SecureContext) bool {
+		initiatorSession = s
+		return false
+	})
+	responderSessionMgr.ForEachSecureSession(func(s *session.SecureContext) bool {
+		responderSession = s
+		return false
+	})
+
+	if initiatorSession == nil || responderSession == nil {
+		t.Fatal("Failed to get sessions")
+	}
+
+	// Initiator's peerSessionID should match responder's localSessionID
+	if initiatorSession.PeerSessionID() != responderSession.LocalSessionID() {
+		t.Errorf("Initiator peerSessionID (%d) should match responder localSessionID (%d)",
+			initiatorSession.PeerSessionID(), responderSession.LocalSessionID())
+	}
+
+	// Responder's peerSessionID should match initiator's localSessionID
+	if responderSession.PeerSessionID() != initiatorSession.LocalSessionID() {
+		t.Errorf("Responder peerSessionID (%d) should match initiator localSessionID (%d)",
+			responderSession.PeerSessionID(), initiatorSession.LocalSessionID())
+	}
+
+	// Verify peerSessionID is not 0 for the initiator (this was the bug we fixed)
+	if initiatorSession.PeerSessionID() == 0 {
+		t.Error("Initiator peerSessionID should not be 0")
+	}
+
+	t.Logf("Session IDs: initiator local=%d peer=%d, responder local=%d peer=%d",
+		initiatorSession.LocalSessionID(), initiatorSession.PeerSessionID(),
+		responderSession.LocalSessionID(), responderSession.PeerSessionID())
+
 	t.Log("PASE handshake completed successfully!")
 }

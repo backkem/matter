@@ -336,6 +336,13 @@ func (c *ExchangeContext) onRetransmitComplete() {
 	c.mu.Unlock()
 }
 
+// HasDelegate returns true if this exchange has a delegate set.
+func (c *ExchangeContext) HasDelegate() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.delegate != nil
+}
+
 // handleMessage processes an incoming message on this exchange.
 // Called by Manager after MRP processing.
 func (c *ExchangeContext) handleMessage(proto *message.ProtocolHeader, payload []byte) ([]byte, error) {

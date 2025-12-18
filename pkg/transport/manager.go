@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"sync"
+
+	"github.com/pion/logging"
 )
 
 // Manager coordinates UDP and TCP transports for Matter messaging.
@@ -39,6 +41,10 @@ type ManagerConfig struct {
 
 	// TCPListener is an optional pre-existing TCP listener for testing.
 	TCPListener net.Listener
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // NewManager creates a new transport manager with the given configuration.
@@ -71,6 +77,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 			Conn:           config.UDPConn,
 			ListenAddr:     listenAddr,
 			MessageHandler: config.MessageHandler,
+			LoggerFactory:  config.LoggerFactory,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("creating UDP transport: %w", err)
@@ -84,6 +91,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 			Listener:       config.TCPListener,
 			ListenAddr:     listenAddr,
 			MessageHandler: config.MessageHandler,
+			LoggerFactory:  config.LoggerFactory,
 		})
 		if err != nil {
 			if m.udp != nil {

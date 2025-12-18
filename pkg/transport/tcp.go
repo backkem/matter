@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/backkem/matter/pkg/message"
+	"github.com/pion/logging"
 )
 
 // TCP provides TCP transport for Matter messages.
@@ -16,6 +17,7 @@ type TCP struct {
 	handler  MessageHandler
 	closeCh  chan struct{}
 	wg       sync.WaitGroup
+	log      logging.LeveledLogger
 
 	// Connection tracking
 	connsMu sync.RWMutex
@@ -47,6 +49,10 @@ type TCPConfig struct {
 	// MessageHandler is called for each received message.
 	// Required.
 	MessageHandler MessageHandler
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // NewTCP creates a new TCP transport with the given configuration.
@@ -60,6 +66,11 @@ func NewTCP(config TCPConfig) (*TCP, error) {
 		handler:  config.MessageHandler,
 		closeCh:  make(chan struct{}),
 		conns:    make(map[string]*tcpConn),
+	}
+
+	// Create logger
+	if config.LoggerFactory != nil {
+		t.log = config.LoggerFactory.NewLogger("transport-tcp")
 	}
 
 	// Create listener if not provided
@@ -93,6 +104,10 @@ func (t *TCP) Start() error {
 	t.started = true
 	t.mu.Unlock()
 
+	if t.log != nil {
+		t.log.Infof("starting TCP transport on %s", t.listener.Addr())
+	}
+
 	t.wg.Add(1)
 	go t.acceptLoop()
 
@@ -108,6 +123,10 @@ func (t *TCP) Stop() error {
 	}
 	t.closed = true
 	t.mu.Unlock()
+
+	if t.log != nil {
+		t.log.Info("stopping TCP transport")
+	}
 
 	close(t.closeCh)
 	t.listener.Close()

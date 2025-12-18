@@ -17,6 +17,7 @@ import (
 	casesession "github.com/backkem/matter/pkg/securechannel/case"
 	"github.com/backkem/matter/pkg/securechannel/pase"
 	"github.com/backkem/matter/pkg/session"
+	"github.com/pion/logging"
 )
 
 // Constants for secure channel manager.
@@ -109,6 +110,10 @@ type ManagerConfig struct {
 
 	// LocalNodeID is our operational node ID (0 for uncommissioned).
 	LocalNodeID fabric.NodeID
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // handshakeContext tracks an active handshake.
@@ -132,6 +137,7 @@ type paseResponderConfig struct {
 // Manager coordinates secure channel protocol operations.
 type Manager struct {
 	config ManagerConfig
+	log    logging.LeveledLogger
 
 	// Active handshakes keyed by exchange ID
 	handshakes map[uint16]*handshakeContext
@@ -144,10 +150,16 @@ type Manager struct {
 
 // NewManager creates a new secure channel Manager.
 func NewManager(config ManagerConfig) *Manager {
-	return &Manager{
+	m := &Manager{
 		config:     config,
 		handshakes: make(map[uint16]*handshakeContext),
 	}
+
+	if config.LoggerFactory != nil {
+		m.log = config.LoggerFactory.NewLogger("securechannel")
+	}
+
+	return m
 }
 
 // MessagePermitted returns true if the opcode is allowed during session establishment.
@@ -482,6 +494,10 @@ func (m *Manager) StartPASE(exchangeID uint16, passcode uint32) ([]byte, error) 
 		startTime:      time.Now(),
 	}
 
+	if m.log != nil {
+		m.log.Infof("starting PASE handshake on exchange %d", exchangeID)
+	}
+
 	return pbkdfReq, nil
 }
 
@@ -533,6 +549,10 @@ func (m *Manager) StartCASE(
 		caseSession:    caseSession,
 		localSessionID: localSessionID,
 		startTime:      time.Now(),
+	}
+
+	if m.log != nil {
+		m.log.Infof("starting CASE handshake on exchange %d", exchangeID)
 	}
 
 	return sigma1, nil
@@ -628,6 +648,9 @@ func (m *Manager) handlePBKDFParamResponse(ctx *handshakeContext, payload []byte
 	if err != nil {
 		return nil, err
 	}
+	// Update peer session ID after processing the response.
+	// The PASE session extracts ResponderSessionID from the response.
+	ctx.peerSessionID = ctx.paseSession.PeerSessionID()
 	return NewMessage(OpcodePASEPake1, pake1), nil
 }
 
@@ -780,6 +803,11 @@ func (m *Manager) completeHandshakeLocked(exchangeID uint16, ctx *handshakeConte
 
 	// Clean up handshake tracking
 	m.cleanupHandshakeLocked(exchangeID)
+
+	if m.log != nil {
+		m.log.Infof("%s session established: local=%d peer=%d",
+			ctx.handshakeType, secureCtx.LocalSessionID(), secureCtx.PeerSessionID())
+	}
 
 	// Return secure context for callback notification (done outside lock by caller)
 	return secureCtx, nil

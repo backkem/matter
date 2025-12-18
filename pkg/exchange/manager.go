@@ -10,6 +10,7 @@ import (
 	"github.com/backkem/matter/pkg/securechannel"
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/transport"
+	"github.com/pion/logging"
 )
 
 // ProtocolHandler handles messages for a specific protocol.
@@ -31,12 +32,17 @@ type ManagerConfig struct {
 
 	// TransportManager handles network I/O.
 	TransportManager *transport.Manager
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // Manager coordinates message exchanges and MRP.
 // It routes messages between transport/session layers and protocol handlers.
 type Manager struct {
 	config ManagerConfig
+	log    logging.LeveledLogger
 
 	// exchanges maps {sessionID, exchangeID, role} to exchange context.
 	exchanges map[exchangeKey]*ExchangeContext
@@ -65,6 +71,10 @@ func NewManager(config ManagerConfig) *Manager {
 		handlers:        make(map[message.ProtocolID]ProtocolHandler),
 		ackTable:        NewAckTable(),
 		retransmitTable: NewRetransmitTable(),
+	}
+
+	if config.LoggerFactory != nil {
+		m.log = config.LoggerFactory.NewLogger("exchange")
 	}
 
 	// Initialize with random exchange ID
@@ -139,6 +149,9 @@ func (m *Manager) OnMessageReceived(msg *transport.ReceivedMessage) error {
 	var header message.MessageHeader
 	_, err := header.Decode(msg.Data)
 	if err != nil {
+		if m.log != nil {
+			m.log.Warnf("failed to decode message header: %v", err)
+		}
 		return ErrInvalidMessage
 	}
 
@@ -215,6 +228,17 @@ func (m *Manager) processFrame(frame *message.Frame, peerAddr transport.PeerAddr
 		m.handleReceivedAck(proto.AckedMessageCounter)
 	}
 
+	// StandaloneAck messages (protocol=SecureChannel, opcode=0x10) are consumed
+	// by MRP and should NOT be delivered to application delegates.
+	// Per Spec 4.12.5.2.1: StandaloneAck carries only acknowledgement, no payload.
+	if proto.ProtocolID == message.ProtocolSecureChannel &&
+		proto.ProtocolOpcode == uint8(securechannel.OpcodeStandaloneAck) {
+		if m.log != nil {
+			m.log.Tracef("consumed StandaloneAck for exchange %d", proto.ExchangeID)
+		}
+		return nil
+	}
+
 	// Match to existing exchange
 	m.mu.RLock()
 	ctx, exists := m.exchanges[key]
@@ -230,8 +254,25 @@ func (m *Manager) processFrame(frame *message.Frame, peerAddr transport.PeerAddr
 		m.scheduleAck(ctx, frame.Header.MessageCounter)
 	}
 
-	// Dispatch to exchange
-	response, err := ctx.handleMessage(proto, frame.Payload)
+	// Dispatch to exchange or protocol handler
+	var response []byte
+	var err error
+
+	// Check if exchange has a delegate, otherwise use protocol handler
+	if ctx.HasDelegate() {
+		response, err = ctx.handleMessage(proto, frame.Payload)
+	} else {
+		// For responder exchanges created from unsolicited messages,
+		// route subsequent messages through the protocol handler
+		m.mu.RLock()
+		handler, hasHandler := m.handlers[proto.ProtocolID]
+		m.mu.RUnlock()
+
+		if hasHandler {
+			response, err = handler.OnMessage(ctx, proto.ProtocolOpcode, frame.Payload)
+		}
+	}
+
 	if err != nil {
 		return err
 	}

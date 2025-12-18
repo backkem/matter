@@ -111,3 +111,117 @@ On successful handshake, both sides derive matching keys:
 | I2RKey | 16 bytes | Encrypt initiator → responder |
 | R2IKey | 16 bytes | Encrypt responder → initiator |
 | AttestationChallenge | 16 bytes | Device attestation binding |
+
+## E2E Testing
+
+Two paired `Manager` instances for deterministic handshake testing without real network I/O.
+
+```
+  Controller Manager                     Device Manager
+  ──────────────────                     ──────────────
+        │                                      │
+        ▼                                      ▼
+    StartPASE()                        SetPASEResponder()
+        │                                      │
+        │  PBKDFParamRequest                   │
+        ├─────────────────────────────────────▶│
+        │                                      │ Route()
+        │  PBKDFParamResponse                  │
+        │◀─────────────────────────────────────┤
+  Route()                                      │
+        │  Pake1                               │
+        ├─────────────────────────────────────▶│
+        │                             Route()  │
+        │  Pake2                               │
+        │◀─────────────────────────────────────┤
+  Route()                                      │
+        │  Pake3                               │
+        ├─────────────────────────────────────▶│
+        │                             Route()  │
+        │  StatusReport                        │
+        │◀─────────────────────────────────────┤
+  Route()                                      │
+        │                                      │
+        ▼                                      ▼
+  OnSessionEstablished()              OnSessionEstablished()
+```
+
+### PASE E2E Test
+
+```go
+// Setup
+verifier, _ := pase.GenerateVerifier(passcode, salt, iterations)
+controllerMgr := NewManager(ManagerConfig{SessionManager: controllerSessionMgr})
+deviceMgr := NewManager(ManagerConfig{SessionManager: deviceSessionMgr})
+deviceMgr.SetPASEResponder(verifier, salt, iterations)
+
+// Handshake
+exchangeID := uint16(1)
+pbkdfReq, _ := controllerMgr.StartPASE(exchangeID, passcode)
+pbkdfRespMsg, _ := deviceMgr.Route(exchangeID, &Message{OpcodePBKDFParamRequest, pbkdfReq})
+pake1Msg, _ := controllerMgr.Route(exchangeID, &Message{OpcodePBKDFParamResponse, pbkdfRespMsg.Payload})
+pake2Msg, _ := deviceMgr.Route(exchangeID, &Message{OpcodePASEPake1, pake1Msg.Payload})
+pake3Msg, _ := controllerMgr.Route(exchangeID, &Message{OpcodePASEPake2, pake2Msg.Payload})
+statusMsg, _ := deviceMgr.Route(exchangeID, &Message{OpcodePASEPake3, pake3Msg.Payload})
+_, _ = controllerMgr.Route(exchangeID, &Message{OpcodeStatusReport, statusMsg.Payload})
+// Both sides now have SecureContext with matching keys
+```
+
+### CASE E2E Test
+
+```go
+// Setup with fabric credentials
+initiatorFabric, initiatorKey := createTestFabricInfo(t, fabricID, initiatorNodeID)
+responderFabric, responderKey := createTestFabricInfo(t, fabricID, responderNodeID)
+
+initiatorMgr := NewManager(ManagerConfig{
+    SessionManager: initiatorSessionMgr,
+    CertValidator:  certValidator,
+    LocalNodeID:    initiatorNodeID,
+})
+
+responderCASE := casesession.NewResponder(fabricLookup, nil)
+responderCASE.WithCertValidator(certValidator)
+
+// Handshake
+sigma1, _ := initiatorMgr.StartCASE(exchangeID, initiatorFabric, initiatorKey, responderNodeID, nil)
+sigma2, _, _ := responderCASE.HandleSigma1(sigma1, responderLocalSessionID)
+sigma3Msg, _ := initiatorMgr.Route(exchangeID, &Message{OpcodeCASESigma2, sigma2})
+_ = responderCASE.HandleSigma3(sigma3Msg.Payload)
+_, _ = initiatorMgr.Route(exchangeID, &Message{OpcodeStatusReport, Success().Encode()})
+```
+
+### Negative Tests
+
+| Test | Scenario | Expected |
+|------|----------|----------|
+| WrongPasscode | Controller uses wrong passcode | `ErrConfirmationFailed` at Pake2 |
+| CorruptedTLV | Malformed TLV in message | Decode error |
+| TruncatedMessage | Empty/short payload | EOF or decode error |
+| WindowClosed | No PASE responder configured | `PASE responder not configured` |
+| InvalidState | Message in wrong state | `ErrInvalidState` |
+| NoSharedRoot | Different fabric roots | `ErrNoSharedRoot` |
+| ConfirmationMismatch | Corrupted Pake3 cA | `ErrConfirmationFailed` |
+
+### Key Verification
+
+```go
+// Direct PASE session comparison
+initiator, _ := pase.NewInitiator(passcode)
+responder, _ := pase.NewResponder(verifier, salt, iterations)
+// ... complete handshake ...
+
+initiatorKeys := initiator.SessionKeys()
+responderKeys := responder.SessionKeys()
+// I2RKey, R2IKey, AttestationChallenge all match
+```
+
+### Encryption Round-Trip
+
+```go
+// After handshake, verify keys work with message.Codec
+codec, _ := message.NewCodec(keys.I2RKey[:], 0)
+encrypted, _ := codec.Encode(header, protocol, payload, false)
+decrypted, _ := codec.Decode(encrypted, 0)
+// decrypted.Payload == payload
+```

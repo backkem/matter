@@ -12,6 +12,7 @@ import (
 	"github.com/backkem/matter/pkg/securechannel"
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/transport"
+	"github.com/pion/logging"
 )
 
 // PASE protocol errors.
@@ -39,6 +40,7 @@ type PASEClient struct {
 	secureChannel   *securechannel.Manager
 	sessionManager  *session.Manager
 	timeout         time.Duration
+	log             logging.LeveledLogger
 }
 
 // PASEClientConfig configures the PASEClient.
@@ -47,6 +49,10 @@ type PASEClientConfig struct {
 	SecureChannel   *securechannel.Manager
 	SessionManager  *session.Manager
 	Timeout         time.Duration
+
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 }
 
 // NewPASEClient creates a new PASE client.
@@ -56,12 +62,18 @@ func NewPASEClient(config PASEClientConfig) *PASEClient {
 		timeout = DefaultPASETimeout
 	}
 
-	return &PASEClient{
+	c := &PASEClient{
 		exchangeManager: config.ExchangeManager,
 		secureChannel:   config.SecureChannel,
 		sessionManager:  config.SessionManager,
 		timeout:         timeout,
 	}
+
+	if config.LoggerFactory != nil {
+		c.log = config.LoggerFactory.NewLogger("pase")
+	}
+
+	return c
 }
 
 // Establish performs the PASE handshake and returns the established secure session.
@@ -77,6 +89,10 @@ func (c *PASEClient) Establish(
 	peerAddr transport.PeerAddress,
 	passcode uint32,
 ) (*session.SecureContext, error) {
+	if c.log != nil {
+		c.log.Infof("starting PASE with %s", peerAddr.Addr)
+	}
+
 	// Apply timeout
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -157,8 +173,18 @@ func (c *PASEClient) Establish(
 		return nil, err
 	}
 
-	// Get the established session from the handler
-	secureCtx := handler.getSession()
+	// Find the established PASE session from the session manager.
+	// The secure channel manager creates the session when processing StatusReport
+	// and notifies via callback, but we need to get the actual session object.
+	var secureCtx *session.SecureContext
+	c.sessionManager.ForEachSecureSession(func(sess *session.SecureContext) bool {
+		if sess.SessionType() == session.SessionTypePASE {
+			secureCtx = sess
+			return false // Stop iteration
+		}
+		return true // Continue
+	})
+
 	if secureCtx == nil {
 		return nil, ErrPASEProtocol
 	}

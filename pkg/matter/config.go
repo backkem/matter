@@ -6,6 +6,7 @@ import (
 	"github.com/backkem/matter/pkg/fabric"
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/transport"
+	"github.com/pion/logging"
 )
 
 // DefaultPort is the default Matter port.
@@ -46,6 +47,11 @@ type NodeConfig struct {
 	OnSessionClosed       func(sessionID uint16)
 	OnCommissioningStart  func()
 	OnCommissioningComplete func(fabricIndex fabric.FabricIndex)
+
+	// Logging - Optional
+	// LoggerFactory is the factory for creating loggers.
+	// If nil, logging is disabled.
+	LoggerFactory logging.LoggerFactory
 
 	// Advanced - Internal use / Testing
 	TransportFactory transport.Factory // For virtual network testing

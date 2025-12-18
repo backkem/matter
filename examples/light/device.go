@@ -150,3 +150,17 @@ func (d *Device) OnboardingPayload() string {
 func (d *Device) ManualPairingCode() string {
 	return d.Node.ManualPairingCode()
 }
+
+// GetNode returns the underlying Matter node.
+// Implements the TestDevice interface for integration testing.
+func (d *Device) GetNode() *matter.Node {
+	return d.Node
+}
+
+// Factory creates a light device from a Matter node config.
+// Use this with the test infrastructure:
+//
+//	pair := integration.NewTestPair(t, light.Factory)
+func Factory(config matter.NodeConfig) (*Device, error) {
+	return NewDeviceWithConfig(config)
+}

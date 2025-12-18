@@ -436,13 +436,15 @@ func TestPipeFactory(t *testing.T) {
 		t.Fatal("Timeout waiting for message")
 	}
 
-	// TCP listener returns nil (not supported yet)
+	// TCP listener is now supported
 	listener, err := factory1.CreateTCPListener(5540)
 	if err != nil {
 		t.Fatalf("CreateTCPListener failed: %v", err)
 	}
-	if listener != nil {
-		t.Error("Expected nil TCP listener (not supported)")
+	if listener == nil {
+		t.Error("Expected non-nil TCP listener")
+	} else {
+		listener.Close()
 	}
 }
 
