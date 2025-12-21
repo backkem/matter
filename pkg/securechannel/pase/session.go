@@ -9,6 +9,7 @@ import (
 
 	"github.com/backkem/matter/pkg/crypto"
 	"github.com/backkem/matter/pkg/crypto/spake2p"
+	"github.com/pion/logging"
 )
 
 // Role represents the PASE participant role.
@@ -134,6 +135,9 @@ type Session struct {
 
 	// For testing: injectable random source
 	rand io.Reader
+
+	// Logging
+	log logging.LeveledLogger
 
 	mu sync.Mutex
 }
@@ -267,6 +271,11 @@ func (s *Session) HandlePBKDFParamRequest(data []byte, localSessionID uint16) ([
 	s.peerSessionID = req.InitiatorSessionID
 	s.peerRandom = req.InitiatorRandom
 	s.peerMRPParams = req.MRPParams
+
+	// Debug: Log the initiator's random that we'll echo back
+	if s.log != nil {
+		s.log.Debugf("Stored InitiatorRandom: %x", req.InitiatorRandom[:])
+	}
 
 	// Generate our random
 	if _, err := io.ReadFull(s.rand, s.localRandom[:]); err != nil {
@@ -640,6 +649,13 @@ func (s *Session) SetRandom(r io.Reader) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rand = r
+}
+
+// SetLogger sets the logger for the session.
+func (s *Session) SetLogger(log logging.LeveledLogger) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.log = log
 }
 
 func copyBytes(b []byte) []byte {

@@ -274,6 +274,8 @@ func (c *ExchangeContext) SendMessage(opcode uint8, payload []byte, reliable boo
 	if ackCounter, hasAck := c.GetPendingAck(); hasAck {
 		proto.Acknowledgement = true
 		proto.AckedMessageCounter = ackCounter
+		// Clear pending ACK since we're piggybacking it
+		c.ClearPendingAck()
 	}
 
 	return manager.sendMessage(c, proto, payload)

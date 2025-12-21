@@ -399,3 +399,134 @@ func (r *Reader) skipValue() error {
 
 	return nil
 }
+
+
+// RawBytes reads the current element as raw TLV bytes.
+// This includes the control byte, tag, and value bytes.
+// The returned bytes can be passed to PutRaw to write the same element with a different tag.
+func (r *Reader) RawBytes() ([]byte, error) {
+	if !r.hasElement {
+		return nil, ErrNoElement
+	}
+
+	var result []byte
+
+	// Start with control byte and tag of current element
+	ctrl := BuildControlOctet(r.elemType, r.tag.Control())
+	result = append(result, ctrl)
+
+	// Append tag bytes
+	tagBytes, err := encodeTag(r.tag)
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, tagBytes...)
+
+	// Now append the value portion
+	if r.elemType.IsContainer() {
+		// For containers, we need to read all nested content
+		if err := r.EnterContainer(); err != nil {
+			return nil, err
+		}
+
+		for {
+			if err := r.Next(); err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			if r.IsEndOfContainer() {
+				break
+			}
+
+			// Recursively read nested element (including its control and tag)
+			nestedBytes, err := r.RawBytes()
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, nestedBytes...)
+		}
+
+		if err := r.ExitContainer(); err != nil {
+			return nil, err
+		}
+
+		// Append end-of-container marker
+		result = append(result, byte(ElementTypeEnd))
+
+	} else if r.elemType.IsString() {
+		// For strings, append length encoding + string data
+		lengthBytes := encodeLengthField(r.stringLen, r.elemType.LengthFieldSize())
+		result = append(result, lengthBytes...)
+
+		if r.stringLen > 0 {
+			stringData := make([]byte, r.stringLen)
+			if _, err := io.ReadFull(r.r, stringData); err != nil {
+				return nil, err
+			}
+			result = append(result, stringData...)
+		}
+		r.valueRead = true
+
+	} else {
+		// For fixed-size types, append the buffered value
+		result = append(result, r.valueBuf[:r.valueLen]...)
+		r.valueRead = true
+	}
+
+	return result, nil
+}
+
+// encodeTag encodes a tag to bytes.
+func encodeTag(tag Tag) ([]byte, error) {
+	switch tag.Control() {
+	case TagControlAnonymous:
+		return nil, nil
+	case TagControlContext:
+		return []byte{byte(tag.TagNumber())}, nil
+	case TagControlCommonProfile2:
+		return []byte{byte(tag.TagNumber()), byte(tag.TagNumber() >> 8)}, nil
+	case TagControlCommonProfile4:
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, tag.TagNumber())
+		return b, nil
+	case TagControlImplicitProfile2:
+		return []byte{byte(tag.TagNumber()), byte(tag.TagNumber() >> 8)}, nil
+	case TagControlImplicitProfile4:
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, tag.TagNumber())
+		return b, nil
+	case TagControlFullyQualified6:
+		b := make([]byte, 6)
+		binary.LittleEndian.PutUint16(b[0:], uint16(tag.VendorID()))
+		binary.LittleEndian.PutUint16(b[2:], uint16(tag.ProfileNumber()))
+		binary.LittleEndian.PutUint16(b[4:], uint16(tag.TagNumber()))
+		return b, nil
+	case TagControlFullyQualified8:
+		b := make([]byte, 8)
+		binary.LittleEndian.PutUint16(b[0:], uint16(tag.VendorID()))
+		binary.LittleEndian.PutUint16(b[2:], uint16(tag.ProfileNumber()))
+		binary.LittleEndian.PutUint32(b[4:], tag.TagNumber())
+		return b, nil
+	default:
+		return nil, ErrInvalidTagControl
+	}
+}
+
+// encodeLengthField encodes a length value according to the field size.
+func encodeLengthField(length uint64, fieldSize int) []byte {
+	b := make([]byte, fieldSize)
+	switch fieldSize {
+	case 1:
+		b[0] = byte(length)
+	case 2:
+		binary.LittleEndian.PutUint16(b, uint16(length))
+	case 4:
+		binary.LittleEndian.PutUint32(b, uint32(length))
+	case 8:
+		binary.LittleEndian.PutUint64(b, length)
+	}
+	return b
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/backkem/matter/pkg/fabric"
 	"github.com/grandcat/zeroconf"
+	"github.com/pion/logging"
 )
 
 // DefaultPort is the default Matter port.
@@ -58,12 +59,16 @@ type AdvertiserConfig struct {
 	// ServerFactory is the factory for creating mDNS servers.
 	// If nil, the default zeroconf factory is used.
 	ServerFactory MDNSServerFactory
+
+	// LoggerFactory for creating loggers.
+	LoggerFactory logging.LoggerFactory
 }
 
 // Advertiser publishes DNS-SD services to the network.
 type Advertiser struct {
 	config   AdvertiserConfig
 	factory  MDNSServerFactory
+	log      logging.LeveledLogger
 	mu       sync.RWMutex
 	services map[ServiceType]*activeService
 	closed   bool
@@ -80,11 +85,17 @@ func NewAdvertiser(config AdvertiserConfig) (*Advertiser, error) {
 		factory = &zeroconfServerFactory{}
 	}
 
-	return &Advertiser{
+	a := &Advertiser{
 		config:   config,
 		factory:  factory,
 		services: make(map[ServiceType]*activeService),
-	}, nil
+	}
+
+	if config.LoggerFactory != nil {
+		a.log = config.LoggerFactory.NewLogger("discovery")
+	}
+
+	return a, nil
 }
 
 // StartCommissionable begins advertising the commissionable node discovery service.
@@ -92,7 +103,7 @@ func NewAdvertiser(config AdvertiserConfig) (*Advertiser, error) {
 // Spec Section 4.3.1
 func (a *Advertiser) StartCommissionable(txt CommissionableTXT) error {
 	if err := txt.Validate(); err != nil {
-		return err
+		return fmt.Errorf("advertiser: commissionable txt validation failed: %w", err)
 	}
 
 	a.mu.Lock()
@@ -109,7 +120,7 @@ func (a *Advertiser) StartCommissionable(txt CommissionableTXT) error {
 	// Generate random instance name
 	instanceName, err := generateRandomInstanceName()
 	if err != nil {
-		return err
+		return fmt.Errorf("advertiser: failed to generate instance name: %w", err)
 	}
 
 	// Build subtypes for discovery filtering
@@ -134,9 +145,18 @@ func (a *Advertiser) StartCommissionable(txt CommissionableTXT) error {
 	}
 
 	// Build service string with subtypes
+	// grandcat/zeroconf@master properly parses comma-separated subtypes
+	// and creates the correct DNS-SD PTR records (_S15._sub._matterc._udp.local.)
 	service := ServiceCommissionable
 	for _, st := range subtypes {
-		service += "," + st + "._sub." + ServiceCommissionable
+		service += "," + st
+	}
+
+	txtRecords := txt.Encode()
+	if a.log != nil {
+		a.log.Debugf("Registering mDNS service: instance=%s service=%s domain=%s port=%d subtypes=%v",
+			instanceName, service, DefaultDomain, a.config.Port, subtypes)
+		a.log.Tracef("TXT records: %v", txtRecords)
 	}
 
 	server, err := a.factory.Register(
@@ -144,17 +164,21 @@ func (a *Advertiser) StartCommissionable(txt CommissionableTXT) error {
 		service,
 		DefaultDomain,
 		a.config.Port,
-		txt.Encode(),
+		txtRecords,
 		a.config.Interfaces,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("advertiser: mDNS registration failed for %s: %w", service, err)
+	}
+
+	if a.log != nil {
+		a.log.Infof("mDNS registration successful for %s", service)
 	}
 
 	a.services[ServiceTypeCommissionable] = &activeService{
 		server:       server,
 		serviceType:  ServiceTypeCommissionable,
-		instanceName: instanceName,
+		instanceName:  instanceName,
 	}
 
 	return nil

@@ -2,12 +2,14 @@ package im
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"sync"
 
 	"github.com/backkem/matter/pkg/exchange"
 	"github.com/backkem/matter/pkg/im/message"
 	"github.com/backkem/matter/pkg/tlv"
+	"github.com/pion/logging"
 )
 
 // InvokeHandler errors.
@@ -100,16 +102,18 @@ type InvokeHandler struct {
 	pendingChunks []*message.InvokeResponseMessage
 	chunkIndex    int
 
-	mu sync.Mutex
+	log logging.LeveledLogger
+	mu  sync.Mutex
 }
 
 // NewInvokeHandler creates a new invoke handler.
-func NewInvokeHandler(handler CommandHandler, maxPayload int) *InvokeHandler {
+func NewInvokeHandler(handler CommandHandler, maxPayload int, log logging.LeveledLogger) *InvokeHandler {
 	return &InvokeHandler{
 		commandHandler: handler,
 		assembler:      NewAssembler(),
 		fragmenter:     NewFragmenter(maxPayload),
 		state:          InvokeHandlerStateIdle,
+		log:            log,
 	}
 }
 
@@ -282,6 +286,16 @@ func (h *InvokeHandler) invokeCommand(cmdData *message.CommandDataIB) (message.I
 	}
 
 	// Command returned response data
+	if h.log != nil && len(result.ResponseData) > 0 {
+		// Log response for debugging
+		maxLen := len(result.ResponseData)
+		if maxLen > 50 {
+			maxLen = 50
+		}
+		h.log.Tracef("InvokeResponse: cluster=0x%04X cmd=0x%02X -> response cmd=0x%02X, Fields (%d bytes): %s",
+			cmdData.Path.Cluster, cmdData.Path.Command, result.ResponsePath.Command,
+			len(result.ResponseData), hex.EncodeToString(result.ResponseData[:maxLen]))
+	}
 	return message.InvokeResponseIB{
 		Command: &message.CommandDataIB{
 			Path:   result.ResponsePath,

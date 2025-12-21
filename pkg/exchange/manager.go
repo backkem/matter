@@ -145,6 +145,10 @@ func (m *Manager) NewExchange(
 //  4. Match to existing exchange or create new one
 //  5. Dispatch to protocol handler
 func (m *Manager) OnMessageReceived(msg *transport.ReceivedMessage) error {
+	if m.log != nil {
+		m.log.Debugf("OnMessageReceived: %d bytes from %v", len(msg.Data), msg.PeerAddr)
+	}
+
 	// Parse message header to get session ID
 	var header message.MessageHeader
 	_, err := header.Decode(msg.Data)
@@ -155,6 +159,11 @@ func (m *Manager) OnMessageReceived(msg *transport.ReceivedMessage) error {
 		return ErrInvalidMessage
 	}
 
+	if m.log != nil {
+		m.log.Debugf("decoded header: sessionID=%d, sourcePresent=%v, counter=%d",
+			header.SessionID, header.SourcePresent, header.MessageCounter)
+	}
+
 	// Look up session
 	var sess SessionContext
 	var frame *message.Frame
@@ -162,25 +171,69 @@ func (m *Manager) OnMessageReceived(msg *transport.ReceivedMessage) error {
 	if header.SessionID == 0 {
 		// Unsecured session (handshake phase)
 		// For unsecured, we parse the protocol header directly
+		if m.log != nil {
+			m.log.Debugf("unsecured session, decoding frame")
+		}
 		frame, err = message.DecodeUnsecured(msg.Data)
 		if err != nil {
+			if m.log != nil {
+				m.log.Warnf("failed to decode unsecured frame: %v", err)
+			}
 			return ErrInvalidMessage
 		}
 
+		if m.log != nil {
+			m.log.Debugf("decoded frame: protocolID=0x%04x (%s), opcode=0x%02x, exchangeID=%d, initiator=%v",
+				uint16(frame.Protocol.ProtocolID), frame.Protocol.ProtocolID.String(),
+				frame.Protocol.ProtocolOpcode,
+				frame.Protocol.ExchangeID, frame.Protocol.Initiator)
+			m.log.Tracef("received unsecured: sourceNodeID=0x%016x, reliability=%v, ack=%v",
+				header.SourceNodeID, frame.Protocol.Reliability, frame.Protocol.Acknowledgement)
+		}
+
 		// Per Spec 4.13.2.1: Look up or create UnsecuredContext by source node ID
-		// Source must be present for unsecured messages
+		// Source must be present for unsecured messages EXCEPT for StandaloneAck (opcode 0x10)
+		// Per Spec 4.12.5.2.1: StandaloneAck messages may omit the source node ID
+		isStandaloneAck := frame.Protocol.ProtocolID == message.ProtocolSecureChannel &&
+			frame.Protocol.ProtocolOpcode == uint8(securechannel.OpcodeStandaloneAck)
+
+		// Handle StandaloneAck without source node ID specially
+		if isStandaloneAck && !header.SourcePresent {
+			// StandaloneAck without source - just process the ACK and return
+			proto := &frame.Protocol
+			if proto.Acknowledgement {
+				if m.log != nil {
+					m.log.Tracef("processing StandaloneAck for exchange %d, acking counter %d", proto.ExchangeID, proto.AckedMessageCounter)
+				}
+				m.handleReceivedAck(proto.AckedMessageCounter)
+			}
+			if m.log != nil {
+				m.log.Tracef("consumed StandaloneAck (no source) for exchange %d", proto.ExchangeID)
+			}
+			return nil
+		}
+
 		if !header.SourcePresent {
+			if m.log != nil {
+				m.log.Warn("source not present in unsecured message")
+			}
 			return ErrInvalidMessage
 		}
 
 		sourceNodeID := fabric.NodeID(header.SourceNodeID)
 		unsecuredCtx, err := m.config.SessionManager.FindOrCreateUnsecuredContext(sourceNodeID)
 		if err != nil {
+			if m.log != nil {
+				m.log.Warnf("failed to get unsecured context: %v", err)
+			}
 			return err
 		}
 
 		// Check message counter for replay
 		if !unsecuredCtx.CheckCounter(header.MessageCounter) {
+			if m.log != nil {
+				m.log.Warn("message counter check failed (replay?)")
+			}
 			return ErrInvalidMessage
 		}
 
@@ -297,6 +350,12 @@ func (m *Manager) handleUnsolicited(
 ) error {
 	proto := frame.Protocol
 
+	if m.log != nil {
+		m.log.Debugf("handleUnsolicited: protocolID=0x%04x (%s), opcode=0x%02x, exchangeID=%d",
+			uint16(proto.ProtocolID), proto.ProtocolID.String(),
+			proto.ProtocolOpcode, proto.ExchangeID)
+	}
+
 	// Per Spec 4.10.5.2:
 	// 1. If I flag set + registered protocol → create exchange
 	// 2. If R flag set → send standalone ACK, drop
@@ -304,6 +363,9 @@ func (m *Manager) handleUnsolicited(
 
 	if !proto.Initiator {
 		// Not from initiator - check if needs ACK
+		if m.log != nil {
+			m.log.Debug("unsolicited message not from initiator, dropping")
+		}
 		if proto.Reliability {
 			m.sendStandaloneAckForUnsolicited(frame, peerAddr, sess)
 		}
@@ -313,10 +375,19 @@ func (m *Manager) handleUnsolicited(
 	// Check for registered protocol handler
 	m.mu.RLock()
 	handler, hasHandler := m.handlers[proto.ProtocolID]
+	numHandlers := len(m.handlers)
 	m.mu.RUnlock()
+
+	if m.log != nil {
+		m.log.Debugf("checking for handler: protocolID=0x%04x (%s), hasHandler=%v, totalHandlers=%d",
+			uint16(proto.ProtocolID), proto.ProtocolID.String(), hasHandler, numHandlers)
+	}
 
 	if !hasHandler {
 		// No handler - send ACK if requested, then drop
+		if m.log != nil {
+			m.log.Warnf("no handler registered for protocol 0x%04x (%s)", uint16(proto.ProtocolID), proto.ProtocolID.String())
+		}
 		if proto.Reliability {
 			m.sendStandaloneAckForUnsolicited(frame, peerAddr, sess)
 		}
@@ -346,6 +417,10 @@ func (m *Manager) handleUnsolicited(
 	}
 
 	// Dispatch to protocol handler
+	if m.log != nil {
+		m.log.Debugf("dispatching to protocol handler: protocolID=0x%04x (%s), opcode=0x%02x",
+			uint16(proto.ProtocolID), proto.ProtocolID.String(), proto.ProtocolOpcode)
+	}
 	response, err := handler.OnUnsolicited(ctx, proto.ProtocolOpcode, frame.Payload)
 	if err != nil {
 		// Remove exchange on error
@@ -410,6 +485,11 @@ func (m *Manager) sendStandaloneAck(ctx *ExchangeContext, ackedCounter uint32) {
 		AckedMessageCounter: ackedCounter,
 	}
 
+	if m.log != nil {
+		m.log.Tracef("sending StandaloneAck: exchangeID=%d, initiator=%v, ackingCounter=%d, ourRole=%s",
+			ctx.ID, proto.Initiator, ackedCounter, ctx.Role)
+	}
+
 	// Mark standalone ACK sent in table
 	key := ctx.GetKey()
 	m.ackTable.MarkStandaloneAckSent(key)
@@ -467,15 +547,25 @@ func (m *Manager) flushPendingAck(ctx *ExchangeContext) {
 
 // sendMessage sends a message on an exchange.
 func (m *Manager) sendMessage(ctx *ExchangeContext, proto *message.ProtocolHeader, payload []byte) error {
+	sess := ctx.Session()
+	if sess == nil {
+		return ErrSessionNotFound
+	}
+
 	// Check for pending ACK to piggyback
-	if ackCounter, hasAck := ctx.GetPendingAck(); hasAck && !proto.Acknowledgement {
+	// For unsecured sessions, don't piggyback - always use standalone ACKs
+	_, isSecure := sess.(SecureSessionContext)
+	if ackCounter, hasAck := ctx.GetPendingAck(); hasAck && !proto.Acknowledgement && isSecure {
 		proto.Acknowledgement = true
 		proto.AckedMessageCounter = ackCounter
+		ctx.ClearPendingAck()
+	}
 
-		// Clear from table (piggybacked, not standalone)
+	// If an ACK is being sent (either piggybacked above or by caller),
+	// clear it from the ACK table
+	if proto.Acknowledgement {
 		key := ctx.GetKey()
 		m.ackTable.MarkAcked(key)
-		ctx.ClearPendingAck()
 	}
 
 	return m.sendMessageInternal(ctx, proto, payload)
@@ -611,13 +701,35 @@ func (m *Manager) sendUnsecuredMessage(ctx *ExchangeContext, sess SessionContext
 	}
 
 	// Build unsecured message header
-	// Per Spec 4.4.1: Session ID = 0, Session Type = Unicast for unsecured
+	// Per Spec 4.4.1 & chip-tool SessionManager.cpp:773:
+	// "ephemeral node id is only assigned to the initiator, there should be one and only one node id exists"
+	// This means we send EITHER source OR destination, not both.
 	header := &message.MessageHeader{
-		SessionID:      0, // Unsecured session
-		SessionType:    message.SessionTypeUnicast,
+		SessionID:    0, // Unsecured session
+		SessionType:  message.SessionTypeUnicast,
 		MessageCounter: counter,
-		SourceNodeID:   uint64(unsecuredCtx.EphemeralNodeID()),
-		SourcePresent:  true, // Required for unsecured messages
+	}
+
+	// Per chip-tool's session routing logic:
+	// - If source present: finds/creates responder session (peer is initiator)
+	// - If destination present (no source): finds initiator session (peer is responder)
+	//
+	// When we're the responder replying to an initiator:
+	// - Send destination only (initiator's node ID) so chip-tool can find its initiator session
+	// - Do NOT send source, or chip-tool will create a new responder session
+	if peerNodeID := unsecuredCtx.PeerEphemeralNodeID(); peerNodeID != 0 {
+		// We're responder, peer is initiator - send destination only
+		header.DestinationType = message.DestinationNodeID
+		header.DestinationNodeID = uint64(peerNodeID)
+	} else {
+		// We're initiator or peer unknown - send source only
+		header.SourceNodeID = uint64(unsecuredCtx.EphemeralNodeID())
+		header.SourcePresent = true
+	}
+
+	if m.log != nil {
+		m.log.Tracef("sending unsecured: exchangeID=%d, opcode=0x%02x, initiator=%v, counter=%d, sourceNodeID=0x%016x, destNodeID=0x%016x, ack=%v, ackedCounter=%d",
+			proto.ExchangeID, proto.ProtocolOpcode, proto.Initiator, counter, header.SourceNodeID, header.DestinationNodeID, proto.Acknowledgement, proto.AckedMessageCounter)
 	}
 
 	// Build frame and encode

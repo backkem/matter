@@ -581,10 +581,22 @@ func (m *Manager) handlePBKDFParamRequest(exchangeID uint16, payload []byte) (*M
 		return nil, err
 	}
 
+	// Pass logger to session
+	if m.log != nil {
+		paseSession.SetLogger(m.log)
+	}
+
 	// Handle the PBKDFParamRequest and get response
 	pbkdfResp, err := paseSession.HandlePBKDFParamRequest(payload, localSessionID)
 	if err != nil {
 		return nil, err
+	}
+
+	if m.log != nil {
+		m.log.Tracef("PBKDFParamResponse: localSessionID=%d, peerSessionID=%d, responseLen=%d",
+			localSessionID, paseSession.PeerSessionID(), len(pbkdfResp))
+		// Log response bytes for debugging
+		m.log.Debugf("PBKDFParamResponse bytes (hex): %x", pbkdfResp)
 	}
 
 	// Store peer session ID from the request

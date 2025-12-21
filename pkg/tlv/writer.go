@@ -172,6 +172,55 @@ func (w *Writer) PutBytes(tag Tag, v []byte) error {
 	return w.writeStringValue(false, tag, v)
 }
 
+// PutRaw writes raw TLV bytes with the given tag.
+// The provided bytes must start with a TLV control byte and be a complete TLV element.
+// This replaces the tag in the raw TLV with the provided tag.
+// This is used when embedding pre-encoded TLV (with anonymous tag) within a container.
+func (w *Writer) PutRaw(tag Tag, rawTLV []byte) error {
+	if len(rawTLV) == 0 {
+		return nil
+	}
+
+	// The rawTLV should start with a control byte
+	// Extract the element type from the control byte
+	controlByte := rawTLV[0]
+	elemType := ElementType(controlByte & 0x1F) // Lower 5 bits are element type
+
+	// Write the new control byte with our tag
+	if err := w.writeControlAndTag(elemType, tag); err != nil {
+		return err
+	}
+
+	// Write the rest of the TLV data (skip original control byte and tag)
+	// Need to determine how many bytes to skip based on tag control
+	originalTagControl := TagControl((controlByte >> 5) & 0x07) // Upper 3 bits are tag control
+	skipBytes := 1 // At least the control byte
+
+	// Skip tag bytes based on tag control type
+	switch originalTagControl {
+	case TagControlAnonymous:
+		// No tag bytes
+	case TagControlContext:
+		skipBytes += 1 // 1-byte tag number
+	case TagControlCommonProfile2, TagControlImplicitProfile2:
+		skipBytes += 2 // 2-byte tag
+	case TagControlCommonProfile4, TagControlImplicitProfile4:
+		skipBytes += 4 // 4-byte tag
+	case TagControlFullyQualified6:
+		skipBytes += 6 // 6-byte tag (2-byte vendor + 2-byte profile + 2-byte tag)
+	case TagControlFullyQualified8:
+		skipBytes += 8 // 8-byte tag (2-byte vendor + 2-byte profile + 4-byte tag)
+	}
+
+	// Write the value portion only
+	if skipBytes < len(rawTLV) {
+		_, err := w.w.Write(rawTLV[skipBytes:])
+		return err
+	}
+
+	return nil
+}
+
 // PutNull writes a null value with the given tag.
 func (w *Writer) PutNull(tag Tag) error {
 	return w.writeControlAndTag(ElementTypeNull, tag)

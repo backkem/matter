@@ -72,6 +72,7 @@ func NewManager(config ManagerConfig) (*Manager, error) {
 		Port:          config.Port,
 		Interfaces:    config.Interfaces,
 		ServerFactory: config.ServerFactory,
+		LoggerFactory: config.LoggerFactory,
 	})
 	if err != nil {
 		return nil, err
@@ -132,7 +133,16 @@ func (m *Manager) StartCommissionable(txt CommissionableTXT) error {
 	}
 	m.mu.RUnlock()
 
-	return m.advertiser.StartCommissionable(txt)
+	if m.log != nil {
+		m.log.Infof("Starting commissionable advertising: discriminator=%d, vendorID=%d, mode=%d",
+			txt.Discriminator, txt.VendorID, txt.CommissioningMode)
+	}
+
+	err := m.advertiser.StartCommissionable(txt)
+	if err != nil && m.log != nil {
+		m.log.Errorf("Failed to start commissionable advertising: %v", err)
+	}
+	return err
 }
 
 // StartOperational begins advertising as an operational (commissioned) node.

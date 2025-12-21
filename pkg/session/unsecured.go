@@ -21,10 +21,11 @@ import (
 //
 // See Spec Section 4.13.2.1 (Unsecured Session Context).
 type UnsecuredContext struct {
-	role            SessionRole
-	ephemeralNodeID fabric.NodeID
-	receptionState  *message.ReceptionState
-	params          Params
+	role                SessionRole
+	ephemeralNodeID     fabric.NodeID
+	peerEphemeralNodeID fabric.NodeID
+	receptionState      *message.ReceptionState
+	params              Params
 
 	mu sync.RWMutex
 }
@@ -36,20 +37,18 @@ func NewUnsecuredContext(role SessionRole) (*UnsecuredContext, error) {
 		return nil, ErrInvalidRole
 	}
 
-	ctx := &UnsecuredContext{
-		role:           role,
-		receptionState: message.NewReceptionStateEmpty(),
-		params:         DefaultParams(),
+	// Both initiators and responders generate their own random ephemeral node ID
+	// This ID is used in the Source Node ID field of outgoing messages
+	nodeID, err := generateEphemeralNodeID()
+	if err != nil {
+		return nil, err
 	}
 
-	// Initiators generate a random ephemeral node ID
-	// Responders will have their ephemeral ID set from the incoming message
-	if role == SessionRoleInitiator {
-		nodeID, err := generateEphemeralNodeID()
-		if err != nil {
-			return nil, err
-		}
-		ctx.ephemeralNodeID = nodeID
+	ctx := &UnsecuredContext{
+		role:            role,
+		ephemeralNodeID: nodeID,
+		receptionState:  message.NewReceptionStateEmpty(),
+		params:          DefaultParams(),
 	}
 
 	return ctx, nil
@@ -63,20 +62,29 @@ func (u *UnsecuredContext) Role() SessionRole {
 }
 
 // EphemeralNodeID returns the ephemeral node ID for this session.
-// For initiators, this is randomly generated at context creation.
-// For responders, this is set from the incoming message's source node ID.
+// This is randomly generated at context creation for both initiators and responders.
+// This value is used in the Source Node ID field of outgoing unsecured messages.
 func (u *UnsecuredContext) EphemeralNodeID() fabric.NodeID {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.ephemeralNodeID
 }
 
-// SetEphemeralNodeID sets the ephemeral node ID.
-// This is used by responders to record the initiator's ephemeral ID.
-func (u *UnsecuredContext) SetEphemeralNodeID(nodeID fabric.NodeID) {
+// SetPeerEphemeralNodeID sets the peer's ephemeral node ID.
+// This is extracted from the Source Node ID field of incoming unsecured messages
+// and used as the Destination Node ID field in outgoing unsecured messages.
+func (u *UnsecuredContext) SetPeerEphemeralNodeID(nodeID fabric.NodeID) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.ephemeralNodeID = nodeID
+	u.peerEphemeralNodeID = nodeID
+}
+
+// PeerEphemeralNodeID returns the peer's ephemeral node ID.
+// Returns 0 if not yet set.
+func (u *UnsecuredContext) PeerEphemeralNodeID() fabric.NodeID {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.peerEphemeralNodeID
 }
 
 // CheckCounter verifies an incoming unencrypted message counter.

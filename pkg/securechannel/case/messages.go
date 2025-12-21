@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/backkem/matter/pkg/crypto"
+	"github.com/backkem/matter/pkg/securechannel/messages"
 	"github.com/backkem/matter/pkg/tlv"
 )
 
@@ -103,7 +104,7 @@ func (s *Sigma1) Encode() ([]byte, error) {
 	if err := w.PutBytes(tlv.ContextTag(tagSigma1InitiatorRandom), s.InitiatorRandom[:]); err != nil {
 		return nil, err
 	}
-	if err := w.PutUint(tlv.ContextTag(tagSigma1InitiatorSessionID), uint64(s.InitiatorSessionID)); err != nil {
+	if err := messages.PutSessionID(w, tlv.ContextTag(tagSigma1InitiatorSessionID), s.InitiatorSessionID); err != nil {
 		return nil, err
 	}
 	if err := w.PutBytes(tlv.ContextTag(tagSigma1DestinationID), s.DestinationID[:]); err != nil {
@@ -274,7 +275,7 @@ func (s *Sigma2) Encode() ([]byte, error) {
 	if err := w.PutBytes(tlv.ContextTag(tagSigma2ResponderRandom), s.ResponderRandom[:]); err != nil {
 		return nil, err
 	}
-	if err := w.PutUint(tlv.ContextTag(tagSigma2ResponderSessionID), uint64(s.ResponderSessionID)); err != nil {
+	if err := messages.PutSessionID(w, tlv.ContextTag(tagSigma2ResponderSessionID), s.ResponderSessionID); err != nil {
 		return nil, err
 	}
 	if err := w.PutBytes(tlv.ContextTag(tagSigma2ResponderEphPubKey), s.ResponderEphPubKey[:]); err != nil {
@@ -790,7 +791,7 @@ func (s *Sigma2Resume) Encode() ([]byte, error) {
 	if err := w.PutBytes(tlv.ContextTag(tagSigma2ResumeResponderMIC), s.Resume2MIC[:]); err != nil {
 		return nil, err
 	}
-	if err := w.PutUint(tlv.ContextTag(tagSigma2ResumeResponderSessionID), uint64(s.ResponderSessionID)); err != nil {
+	if err := messages.PutSessionID(w, tlv.ContextTag(tagSigma2ResumeResponderSessionID), s.ResponderSessionID); err != nil {
 		return nil, err
 	}
 

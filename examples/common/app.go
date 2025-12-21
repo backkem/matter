@@ -10,6 +10,7 @@ import (
 
 	"github.com/backkem/matter/pkg/fabric"
 	"github.com/backkem/matter/pkg/matter"
+	"github.com/pion/logging"
 )
 
 // CreateNode creates a Matter node from Options.
@@ -25,6 +26,9 @@ func CreateNode(opts Options) (*matter.Node, error) {
 		storage = matter.NewMemoryStorage()
 	}
 
+	// Create logger factory for diagnostics
+	loggerFactory := logging.NewDefaultLoggerFactory()
+
 	// Create node configuration
 	config := matter.NodeConfig{
 		VendorID:      fabric.VendorID(opts.VendorID),
@@ -34,6 +38,7 @@ func CreateNode(opts Options) (*matter.Node, error) {
 		Passcode:      opts.Passcode,
 		Port:          opts.Port,
 		Storage:       storage,
+		LoggerFactory: loggerFactory,
 
 		// Add callbacks for visibility
 		OnStateChanged: func(state matter.NodeState) {

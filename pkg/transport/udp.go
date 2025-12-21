@@ -146,8 +146,15 @@ func (u *UDP) Send(data []byte, addr net.Addr) error {
 		return ErrMessageTooLarge
 	}
 
+	if u.log != nil {
+		u.log.Debugf("sending %d bytes to %v", len(data), addr)
+	}
+
 	_, err := u.conn.WriteTo(data, addr)
 	if err != nil {
+		if u.log != nil {
+			u.log.Warnf("send failed: %v", err)
+		}
 		return err
 	}
 
@@ -193,6 +200,11 @@ func (u *UDP) readLoop() {
 		// Make a copy of the data for the handler
 		data := make([]byte, n)
 		copy(data, buf[:n])
+
+		// Debug logging for received packets
+		if u.log != nil {
+			u.log.Debugf("received %d bytes from %v", n, addr)
+		}
 
 		msg := &ReceivedMessage{
 			Data:     data,

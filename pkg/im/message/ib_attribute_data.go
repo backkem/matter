@@ -45,7 +45,7 @@ func (a *AttributeDataIB) EncodeWithTag(w *tlv.Writer, tag tlv.Tag) error {
 	// Data is written as raw TLV with context tag 2
 	// The caller is responsible for ensuring Data is valid TLV
 	if len(a.Data) > 0 {
-		if err := w.PutBytes(tlv.ContextTag(attrDataTagData), a.Data); err != nil {
+		if err := w.PutRaw(tlv.ContextTag(attrDataTagData), a.Data); err != nil {
 			return err
 		}
 	}

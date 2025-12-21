@@ -131,6 +131,9 @@ func (n *Node) CloseCommissioningWindow() error {
 // advertiseCommissionable starts DNS-SD advertising as commissionable.
 func (n *Node) advertiseCommissionable() {
 	if n.discoveryMgr == nil {
+		if n.log != nil {
+			n.log.Warn("Discovery manager is nil, cannot advertise")
+		}
 		return
 	}
 
@@ -142,7 +145,9 @@ func (n *Node) advertiseCommissionable() {
 		CommissioningMode: discovery.CommissioningModeBasic,
 	}
 
-	n.discoveryMgr.StartCommissionable(txt)
+	if err := n.discoveryMgr.StartCommissionable(txt); err != nil && n.log != nil {
+		n.log.Errorf("Failed to start commissionable advertising: %v", err)
+	}
 }
 
 // onCommissioningStateChanged handles commissioning state changes.

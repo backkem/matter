@@ -88,7 +88,7 @@ func (e *EventDataIB) EncodeWithTag(w *tlv.Writer, tag tlv.Tag) error {
 	}
 
 	if len(e.Data) > 0 {
-		if err := w.PutBytes(tlv.ContextTag(eventDataTagData), e.Data); err != nil {
+		if err := w.PutRaw(tlv.ContextTag(eventDataTagData), e.Data); err != nil {
 			return err
 		}
 	}

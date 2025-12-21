@@ -83,17 +83,19 @@ func NewEngine(config EngineConfig) *Engine {
 		dispatcher = NullDispatcher{}
 	}
 
+	var log logging.LeveledLogger
+	if config.LoggerFactory != nil {
+		log = config.LoggerFactory.NewLogger("im")
+	}
+
 	e := &Engine{
 		dispatcher:    dispatcher,
 		aclChecker:    config.ACLChecker,
 		maxPayload:    maxPayload,
-		readHandler:   NewReadHandler(nil, maxPayload),   // Reader set per-request
+		readHandler:   NewReadHandler(nil, maxPayload),     // Reader set per-request
 		writeHandler:  NewWriteHandler(dispatcher),
-		invokeHandler: NewInvokeHandler(nil, maxPayload), // Handler set per-request
-	}
-
-	if config.LoggerFactory != nil {
-		e.log = config.LoggerFactory.NewLogger("im")
+		invokeHandler: NewInvokeHandler(nil, maxPayload, log), // Handler set per-request
+		log:           log,
 	}
 
 	return e
@@ -265,7 +267,7 @@ func (e *Engine) handleInvokeRequest(ctx *exchange.ExchangeContext, payload []by
 	cmdHandler := e.createCommandHandler()
 
 	// Create handler
-	handler := NewInvokeHandler(cmdHandler, e.maxPayload)
+	handler := NewInvokeHandler(cmdHandler, e.maxPayload, e.log)
 
 	// Extract fabric/node info from session (simplified)
 	fabricIndex := uint8(1)
@@ -385,6 +387,10 @@ func (e *Engine) createCommandHandler() CommandHandler {
 
 		respData, err := e.dispatcher.InvokeCommand(nil, req, r)
 		if err != nil {
+			if e.log != nil {
+				e.log.Tracef("InvokeCommand failed: cluster=0x%04X cmd=0x%02X err=%v",
+					path.Cluster, path.Command, err)
+			}
 			return &CommandResult{
 				Status: &imsg.StatusIB{
 					Status: ErrorToStatus(err),
@@ -392,8 +398,13 @@ func (e *Engine) createCommandHandler() CommandHandler {
 			}, nil
 		}
 
+		// Server commands typically have response with command ID = request + 1
+		// TODO: Get response command ID from cluster metadata
+		responsePath := path
+		responsePath.Command++
+
 		return &CommandResult{
-			ResponsePath: path,
+			ResponsePath: responsePath,
 			ResponseData: respData,
 		}, nil
 	}

@@ -39,8 +39,9 @@ func (c *CommandDataIB) EncodeWithTag(w *tlv.Writer, tag tlv.Tag) error {
 	}
 
 	// Fields is written as raw TLV with context tag 1
+	// The Fields are pre-encoded as a complete TLV structure
 	if len(c.Fields) > 0 {
-		if err := w.PutBytes(tlv.ContextTag(cmdDataTagFields), c.Fields); err != nil {
+		if err := w.PutRaw(tlv.ContextTag(cmdDataTagFields), c.Fields); err != nil {
 			return err
 		}
 	}
@@ -104,11 +105,13 @@ func (c *CommandDataIB) DecodeFrom(r *tlv.Reader) error {
 			hasPath = true
 
 		case cmdDataTagFields:
-			data, err := r.Bytes()
+			// Fields is a raw TLV structure - read as raw bytes
+			// This preserves the complete TLV element for the cluster handler to decode
+			fieldBytes, err := r.RawBytes()
 			if err != nil {
 				return err
 			}
-			c.Fields = data
+			c.Fields = fieldBytes
 
 		case cmdDataTagRef:
 			v, err := r.Uint()

@@ -126,14 +126,17 @@ func (m *Manager) FindOrCreateUnsecuredContext(sourceNodeID fabric.NodeID) (*Uns
 	}
 
 	// Create new responder context per Spec 4.13.2.1
+	// The context will have its own randomly-generated ephemeral node ID
 	ctx, err := NewUnsecuredContext(SessionRoleResponder)
 	if err != nil {
 		return nil, err
 	}
 
-	// Record initiator's ephemeral node ID
-	ctx.SetEphemeralNodeID(sourceNodeID)
+	// Store the peer's ephemeral node ID (the initiator's node ID)
+	// This will be used as the destination in our responses
+	ctx.SetPeerEphemeralNodeID(sourceNodeID)
 
+	// Index by initiator's ephemeral node ID for message routing
 	m.unsecured[sourceNodeID] = ctx
 	return ctx, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/backkem/matter/pkg/securechannel/messages"
 	"github.com/backkem/matter/pkg/tlv"
 )
 
@@ -68,10 +69,10 @@ func (p *PBKDFParamRequest) Encode() ([]byte, error) {
 	if err := w.PutBytes(tlv.ContextTag(tagPBKDFReqInitiatorRandom), p.InitiatorRandom[:]); err != nil {
 		return nil, err
 	}
-	if err := w.PutUint(tlv.ContextTag(tagPBKDFReqInitiatorSessionID), uint64(p.InitiatorSessionID)); err != nil {
+	if err := messages.PutSessionID(w, tlv.ContextTag(tagPBKDFReqInitiatorSessionID), p.InitiatorSessionID); err != nil {
 		return nil, err
 	}
-	if err := w.PutUint(tlv.ContextTag(tagPBKDFReqPasscodeID), uint64(p.PasscodeID)); err != nil {
+	if err := messages.PutPasscodeID(w, tlv.ContextTag(tagPBKDFReqPasscodeID), p.PasscodeID); err != nil {
 		return nil, err
 	}
 	if err := w.PutBool(tlv.ContextTag(tagPBKDFReqHasPBKDFParams), p.HasPBKDFParameters); err != nil {
@@ -193,7 +194,7 @@ func (p *PBKDFParamResponse) Encode() ([]byte, error) {
 	if err := w.PutBytes(tlv.ContextTag(tagPBKDFRespResponderRandom), p.ResponderRandom[:]); err != nil {
 		return nil, err
 	}
-	if err := w.PutUint(tlv.ContextTag(tagPBKDFRespResponderSessionID), uint64(p.ResponderSessionID)); err != nil {
+	if err := messages.PutSessionID(w, tlv.ContextTag(tagPBKDFRespResponderSessionID), p.ResponderSessionID); err != nil {
 		return nil, err
 	}
 
