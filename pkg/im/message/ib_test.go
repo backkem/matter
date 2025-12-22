@@ -151,7 +151,9 @@ func TestCommandDataIB_Roundtrip(t *testing.T) {
 					Cluster:  3,
 					Command:  4,
 				},
-				Fields: []byte{0x15, 0x29, 0x01, 0x18}, // Structure with bool true
+				// Fields with context tag 1 struct containing bool true
+				// This matches chip-tool format: context tag 1 (0x35 0x01), context tag 1 bool true (0x29 0x01), end (0x18)
+				Fields: []byte{0x35, 0x01, 0x29, 0x01, 0x18},
 			},
 		},
 		{
@@ -315,7 +317,8 @@ func TestAttributeReportIB_Roundtrip(t *testing.T) {
 						Cluster:   Ptr(ClusterID(6)),
 						Attribute: Ptr(AttributeID(0)),
 					},
-					Data: []byte{0x08}, // False
+					// Data with context tag 2 (attrDataTagData): boolean false
+					Data: []byte{0x28, 0x02}, // Context tag 2, boolean false
 				},
 			},
 		},
@@ -379,7 +382,8 @@ func TestEventDataIB_Roundtrip(t *testing.T) {
 				SystemTimestamp:      Ptr(uint64(5)),
 				DeltaEpochTimestamp:  Ptr(uint64(6)),
 				DeltaSystemTimestamp: Ptr(uint64(7)),
-				Data:                 []byte{0x15, 0x29, 0x01, 0x18}, // Structure with bool true
+				// Data with context tag 7 (eventDataTagData): struct with bool true
+				Data: []byte{0x35, 0x07, 0x29, 0x01, 0x18},
 			},
 		},
 		{

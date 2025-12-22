@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -154,7 +155,7 @@ func TestAdvertiser_StartCommissionable(t *testing.T) {
 		err := adv2.StartCommissionable(CommissionableTXT{
 			Discriminator: 0x1000, // Too large
 		})
-		if err != ErrInvalidDiscriminator {
+		if !errors.Is(err, ErrInvalidDiscriminator) {
 			t.Errorf("StartCommissionable() error = %v, want %v", err, ErrInvalidDiscriminator)
 		}
 	})

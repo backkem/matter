@@ -352,9 +352,14 @@ func TestManager_FindOrCreateUnsecuredContext(t *testing.T) {
 			t.Errorf("Role() = %v, want SessionRoleResponder", ctx.Role())
 		}
 
-		// Per Spec 4.13.2.1: Ephemeral Initiator Node ID should be recorded
-		if ctx.EphemeralNodeID() != sourceNodeID {
-			t.Errorf("EphemeralNodeID() = %v, want %v", ctx.EphemeralNodeID(), sourceNodeID)
+		// Per Spec 4.13.2.1: Ephemeral Initiator Node ID should be recorded as peer
+		if ctx.PeerEphemeralNodeID() != sourceNodeID {
+			t.Errorf("PeerEphemeralNodeID() = %v, want %v", ctx.PeerEphemeralNodeID(), sourceNodeID)
+		}
+
+		// Responder should have its own ephemeral node ID
+		if !ctx.EphemeralNodeID().IsOperational() {
+			t.Errorf("EphemeralNodeID() = %v, not in operational range", ctx.EphemeralNodeID())
 		}
 
 		if m.UnsecuredSessionCount() != 1 {

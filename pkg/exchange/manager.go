@@ -213,15 +213,39 @@ func (m *Manager) OnMessageReceived(msg *transport.ReceivedMessage) error {
 			return nil
 		}
 
-		if !header.SourcePresent {
+		// Per Spec 4.13.2.1 and 4.14.1.2/4.14.2.3:
+		// - Initiator sends: Source Node ID = Ephemeral Initiator Node ID (S=1, DSIZ=0)
+		// - Responder sends: Destination Node ID = Ephemeral Initiator Node ID (S=0, DSIZ=1)
+		// We need EITHER source OR destination, not both and not neither.
+		var ephemeralInitiatorNodeID fabric.NodeID
+		var unsecuredCtx *session.UnsecuredContext
+		var err error
+
+		if header.SourcePresent {
+			// Message from initiator - Source contains the Ephemeral Initiator Node ID
+			ephemeralInitiatorNodeID = fabric.NodeID(header.SourceNodeID)
+			unsecuredCtx, err = m.config.SessionManager.FindOrCreateUnsecuredContext(ephemeralInitiatorNodeID)
+		} else if header.DestinationType == message.DestinationNodeID {
+			// Message from responder - Destination contains the Ephemeral Initiator Node ID
+			// This is our own ephemeral ID, so we look up our initiator context
+			ephemeralInitiatorNodeID = fabric.NodeID(header.DestinationNodeID)
 			if m.log != nil {
-				m.log.Warn("source not present in unsecured message")
+				m.log.Debugf("looking up initiator context by destination node ID 0x%016x", uint64(ephemeralInitiatorNodeID))
+			}
+			unsecuredCtx = m.config.SessionManager.FindUnsecuredContext(ephemeralInitiatorNodeID)
+			if unsecuredCtx == nil {
+				if m.log != nil {
+					m.log.Warnf("no unsecured context for destination node ID 0x%016x (unsecured count: %d)",
+						uint64(ephemeralInitiatorNodeID), m.config.SessionManager.UnsecuredSessionCount())
+				}
+				return ErrSessionNotFound
+			}
+		} else {
+			if m.log != nil {
+				m.log.Warn("unsecured message has neither source nor destination node ID")
 			}
 			return ErrInvalidMessage
 		}
-
-		sourceNodeID := fabric.NodeID(header.SourceNodeID)
-		unsecuredCtx, err := m.config.SessionManager.FindOrCreateUnsecuredContext(sourceNodeID)
 		if err != nil {
 			if m.log != nil {
 				m.log.Warnf("failed to get unsecured context: %v", err)

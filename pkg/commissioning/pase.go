@@ -101,10 +101,12 @@ func (c *PASEClient) Establish(
 	}
 
 	// Create unsecured session context for PASE handshake
-	unsecuredSess, err := session.NewUnsecuredContext(session.SessionRoleInitiator)
+	// Must use session manager to register the context so responses can be routed
+	unsecuredSess, err := c.sessionManager.CreateUnsecuredInitiatorContext()
 	if err != nil {
 		return nil, err
 	}
+	defer c.sessionManager.RemoveUnsecuredContext(unsecuredSess.EphemeralNodeID())
 
 	// Create PASE handler to process responses
 	handler := newPASEHandler(c.secureChannel)

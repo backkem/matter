@@ -190,7 +190,8 @@ func (e *EventDataIB) DecodeFrom(r *tlv.Reader) error {
 			e.DeltaSystemTimestamp = &v
 
 		case eventDataTagData:
-			data, err := r.Bytes()
+			// Read the raw TLV data (preserves element with context tag)
+			data, err := r.RawBytes()
 			if err != nil {
 				return err
 			}

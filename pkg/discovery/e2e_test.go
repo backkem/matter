@@ -245,13 +245,14 @@ func TestE2E_MultipleSubtypes(t *testing.T) {
 		"_T256",   // Device type
 	}
 
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		t.Fatalf("Failed to create resolver: %v", err)
-	}
-
 	for _, subtype := range subtypes {
 		t.Run("subtype="+subtype, func(t *testing.T) {
+			// Create a fresh resolver for each subtype to avoid Windows mDNS state issues
+			resolver, err := zeroconf.NewResolver(nil)
+			if err != nil {
+				t.Fatalf("Failed to create resolver: %v", err)
+			}
+
 			entries := make(chan *zeroconf.ServiceEntry)
 			found := make(chan bool, 1)
 

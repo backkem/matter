@@ -13,7 +13,7 @@ func TestInvokeHandler_SimpleCommand(t *testing.T) {
 			ResponsePath: path,
 			ResponseData: []byte{0x15, 0x18}, // Empty struct in TLV
 		}, nil
-	}, DefaultMaxPayload)
+	}, DefaultMaxPayload, nil)
 
 	req := &message.InvokeRequestMessage{
 		SuppressResponse: false,
@@ -59,7 +59,7 @@ func TestInvokeHandler_StatusResponse(t *testing.T) {
 				Status: message.StatusSuccess,
 			},
 		}, nil
-	}, DefaultMaxPayload)
+	}, DefaultMaxPayload, nil)
 
 	req := &message.InvokeRequestMessage{
 		InvokeRequests: []message.CommandDataIB{
@@ -84,7 +84,7 @@ func TestInvokeHandler_StatusResponse(t *testing.T) {
 }
 
 func TestInvokeHandler_NoHandler(t *testing.T) {
-	handler := NewInvokeHandler(nil, DefaultMaxPayload)
+	handler := NewInvokeHandler(nil, DefaultMaxPayload, nil)
 
 	req := &message.InvokeRequestMessage{
 		InvokeRequests: []message.CommandDataIB{
@@ -120,7 +120,7 @@ func TestInvokeHandler_BatchCommands(t *testing.T) {
 			ResponsePath: path,
 			ResponseData: []byte{0x15, 0x18},
 		}, nil
-	}, DefaultMaxPayload)
+	}, DefaultMaxPayload, nil)
 
 	// Request with multiple commands
 	ref1 := uint16(1)
@@ -174,7 +174,7 @@ func TestInvokeHandler_BatchCommands(t *testing.T) {
 }
 
 func TestInvokeHandler_TimedMismatch(t *testing.T) {
-	handler := NewInvokeHandler(nil, DefaultMaxPayload)
+	handler := NewInvokeHandler(nil, DefaultMaxPayload, nil)
 
 	req := &message.InvokeRequestMessage{
 		TimedRequest: true, // Request says timed
@@ -200,7 +200,7 @@ func TestInvokeHandler_ChunkedResponse(t *testing.T) {
 			ResponsePath: path,
 			ResponseData: make([]byte, 100), // Large response
 		}, nil
-	}, 80) // Small MTU
+	}, 80, nil) // Small MTU
 
 	// Create request with multiple commands to generate large response
 	req := &message.InvokeRequestMessage{
@@ -256,7 +256,7 @@ func TestInvokeHandler_ChunkedResponseAbort(t *testing.T) {
 			ResponsePath: path,
 			ResponseData: make([]byte, 100),
 		}, nil
-	}, 80)
+	}, 80, nil)
 
 	req := &message.InvokeRequestMessage{
 		InvokeRequests: make([]message.CommandDataIB, 5),
@@ -293,7 +293,7 @@ func TestInvokeHandler_Reset(t *testing.T) {
 			ResponsePath: path,
 			ResponseData: make([]byte, 100),
 		}, nil
-	}, 80)
+	}, 80, nil)
 
 	req := &message.InvokeRequestMessage{
 		InvokeRequests: make([]message.CommandDataIB, 5),
@@ -325,7 +325,7 @@ func TestInvokeHandler_InvokeContext(t *testing.T) {
 	handler := NewInvokeHandler(func(ctx *InvokeContext, path message.CommandPathIB, fields []byte) (*CommandResult, error) {
 		capturedCtx = ctx
 		return nil, nil
-	}, DefaultMaxPayload)
+	}, DefaultMaxPayload, nil)
 
 	req := &message.InvokeRequestMessage{
 		TimedRequest: true,

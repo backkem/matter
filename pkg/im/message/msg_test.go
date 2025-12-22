@@ -148,7 +148,8 @@ func TestInvokeRequestMessage_Roundtrip(t *testing.T) {
 							Cluster:  3,
 							Command:  4,
 						},
-						Fields: []byte{0x15, 0x29, 0x01, 0x18},
+						// Fields with context tag 1: struct with bool true
+						Fields: []byte{0x35, 0x01, 0x29, 0x01, 0x18},
 					},
 				},
 			},
@@ -210,7 +211,8 @@ func TestInvokeResponseMessage_Roundtrip(t *testing.T) {
 								Cluster:  3,
 								Command:  4,
 							},
-							Fields: []byte{0x15, 0x29, 0x01, 0x18},
+							// Fields with context tag 1: struct with bool true
+							Fields: []byte{0x35, 0x01, 0x29, 0x01, 0x18},
 						},
 					},
 				},
@@ -283,7 +285,8 @@ func TestReportDataMessage_Roundtrip(t *testing.T) {
 								Attribute:            Ptr(AttributeID(4)),
 								ListIndex:            Ptr(ListIndex(5)),
 							},
-							Data: []byte{0x15, 0x29, 0x01, 0x18},
+							// Data with context tag 2: struct with bool true
+							Data: []byte{0x35, 0x02, 0x29, 0x01, 0x18},
 						},
 					},
 				},
@@ -303,7 +306,8 @@ func TestReportDataMessage_Roundtrip(t *testing.T) {
 							SystemTimestamp:      Ptr(uint64(5)),
 							DeltaEpochTimestamp:  Ptr(uint64(6)),
 							DeltaSystemTimestamp: Ptr(uint64(7)),
-							Data:                 []byte{0x15, 0x29, 0x01, 0x18},
+							// Data with context tag 7: struct with bool true
+							Data: []byte{0x35, 0x07, 0x29, 0x01, 0x18},
 						},
 					},
 				},
@@ -478,7 +482,8 @@ func TestWriteRequestMessage_Roundtrip(t *testing.T) {
 							Attribute:            Ptr(AttributeID(4)),
 							ListIndex:            Ptr(ListIndex(5)),
 						},
-						Data: []byte{0x15, 0x29, 0x01, 0x18},
+						// Data with context tag 2: struct with bool true
+						Data: []byte{0x35, 0x02, 0x29, 0x01, 0x18},
 					},
 				},
 				MoreChunkedMessages: true,

@@ -111,8 +111,8 @@ func (a *AttributeDataIB) DecodeFrom(r *tlv.Reader) error {
 			hasPath = true
 
 		case attrDataTagData:
-			// Read the raw TLV data
-			data, err := r.Bytes()
+			// Read the raw TLV data (preserves element with context tag)
+			data, err := r.RawBytes()
 			if err != nil {
 				return err
 			}

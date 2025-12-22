@@ -250,7 +250,8 @@ func TestWriteRequestMessage_SpecEncoding(t *testing.T) {
 					Cluster:   &cl,
 					Attribute: &attr,
 				},
-				Data: []byte{0x09}, // Boolean true
+				// Data with context tag 2: boolean true
+				Data: []byte{0x29, 0x02},
 			},
 		},
 		MoreChunkedMessages: false,
@@ -359,7 +360,8 @@ func TestReportDataMessage_SpecEncoding(t *testing.T) {
 						Cluster:   &cl,
 						Attribute: &attr,
 					},
-					Data: []byte{0x08}, // Boolean false
+					// Data with context tag 2: boolean false
+					Data: []byte{0x28, 0x02},
 				},
 			},
 		},

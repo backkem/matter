@@ -79,7 +79,8 @@ func TestE2E_InvokeCommand_WithResponse(t *testing.T) {
 
 	// Configure mock to return response data
 	// This simulates a command that returns data (e.g., a query command)
-	responseData := []byte{0x15, 0x00, 0x28, 0x01, 0x18} // TLV: struct with bool true
+	// Response data uses context tag 1 format (matches what chip-tool produces)
+	responseData := []byte{0x35, 0x01, 0x29, 0x01, 0x18} // Context tag 1 struct with context tag 1 bool true
 	mockDispatcher.SetInvokeResult(responseData, nil)
 
 	pair, err := NewSecureTestIMPair(SecureTestIMPairConfig{

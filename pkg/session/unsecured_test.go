@@ -19,15 +19,15 @@ func TestNewUnsecuredContext(t *testing.T) {
 		}
 	})
 
-	t.Run("responder has zero ephemeral node ID initially", func(t *testing.T) {
+	t.Run("responder generates ephemeral node ID", func(t *testing.T) {
 		ctx, err := NewUnsecuredContext(SessionRoleResponder)
 		if err != nil {
 			t.Fatalf("NewUnsecuredContext() error = %v", err)
 		}
 
 		nodeID := ctx.EphemeralNodeID()
-		if nodeID != 0 {
-			t.Errorf("EphemeralNodeID() = %v, want 0", nodeID)
+		if !nodeID.IsOperational() {
+			t.Errorf("EphemeralNodeID() = %v, not in operational range", nodeID)
 		}
 	})
 
@@ -46,14 +46,14 @@ func TestUnsecuredContext_Role(t *testing.T) {
 	}
 }
 
-func TestUnsecuredContext_SetEphemeralNodeID(t *testing.T) {
+func TestUnsecuredContext_SetPeerEphemeralNodeID(t *testing.T) {
 	ctx, _ := NewUnsecuredContext(SessionRoleResponder)
 
 	testNodeID := fabric.NodeID(0x1234567890ABCDEF)
-	ctx.SetEphemeralNodeID(testNodeID)
+	ctx.SetPeerEphemeralNodeID(testNodeID)
 
-	if ctx.EphemeralNodeID() != testNodeID {
-		t.Errorf("EphemeralNodeID() = %v, want %v", ctx.EphemeralNodeID(), testNodeID)
+	if ctx.PeerEphemeralNodeID() != testNodeID {
+		t.Errorf("PeerEphemeralNodeID() = %v, want %v", ctx.PeerEphemeralNodeID(), testNodeID)
 	}
 }
 

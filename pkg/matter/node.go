@@ -370,6 +370,11 @@ func (n *Node) registerProtocols() {
 
 // startDiscovery initializes DNS-SD.
 func (n *Node) startDiscovery() error {
+	// Skip mDNS discovery when using custom transport (virtual network testing)
+	if n.config.TransportFactory != nil {
+		return nil
+	}
+
 	var err error
 	n.discoveryMgr, err = discovery.NewManager(discovery.ManagerConfig{
 		Port:          n.config.Port,

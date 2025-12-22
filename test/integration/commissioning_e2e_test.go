@@ -16,6 +16,7 @@ import (
 	"github.com/backkem/matter/pkg/matter"
 	"github.com/backkem/matter/pkg/session"
 	"github.com/backkem/matter/pkg/transport"
+	"github.com/pion/logging"
 )
 
 // TestE2E_PASECommissioning tests PASE commissioning through the full Matter stack.
@@ -35,6 +36,9 @@ func TestE2E_PASECommissioning(t *testing.T) {
 	var controllerSessionEstablished bool
 	var mu sync.Mutex
 
+	// Create logger factory for debugging
+	loggerFactory := logging.NewDefaultLoggerFactory()
+
 	// Create device using the light example
 	deviceConfig := matter.NodeConfig{
 		VendorID:         fabric.VendorID(0xFFF1),
@@ -45,6 +49,7 @@ func TestE2E_PASECommissioning(t *testing.T) {
 		Port:             5540,
 		Storage:          matter.NewMemoryStorage(),
 		TransportFactory: deviceFactory,
+		LoggerFactory:    loggerFactory,
 		OnSessionEstablished: func(sessionID uint16, sessionType session.SessionType) {
 			if sessionType == session.SessionTypePASE {
 				mu.Lock()
@@ -70,6 +75,7 @@ func TestE2E_PASECommissioning(t *testing.T) {
 		Port:             5541,
 		Storage:          matter.NewMemoryStorage(),
 		TransportFactory: controllerFactory,
+		LoggerFactory:    loggerFactory,
 		OnSessionEstablished: func(sessionID uint16, sessionType session.SessionType) {
 			if sessionType == session.SessionTypePASE {
 				mu.Lock()
