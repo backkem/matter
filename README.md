@@ -13,12 +13,22 @@
 ### Features
 
 - Matter 1.5 Specification
+  - TLV encoding/decoding
+  - Secure Channel (PASE, CASE)
+  - Interaction Model
+  - Pluggable Device Attestation
 - WebRTC Transport Cluster
-- TLV encoding/decoding
-- Secure Channel (PASE, CASE)
-- Interaction Model
-- Device Attestation
 - Pure Go, no Cgo
+
+### Roadmap
+
+- [ ] Complete OnOff chip-tool integration test
+  - [ ] clusters/operationalcredentials
+- [ ] Improve clusters/webrtc-transport
+  - [ ] 10.2.3 Chunking
+- [ ] clusters/cameras
+- [ ] Improve examples
+- [ ] Improved mDNS support
 
 ### License
 
