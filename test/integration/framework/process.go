@@ -118,6 +118,12 @@ func (d *DeviceProcess) Start() error {
 	d.cmd = exec.CommandContext(d.ctx, "go", cmdArgs...)
 	d.cmd.Dir = absPath
 
+	// `go run` execs the built binary as a child. Signal the whole process
+	// group so cancellation reaches the device, not just the go wrapper.
+	setProcessGroup(d.cmd)
+	d.cmd.Cancel = func() error { return signalProcessGroup(d.cmd, syscall.SIGTERM) }
+	d.cmd.WaitDelay = 5 * time.Second
+
 	// Enable full PION logging for debugging
 	d.cmd.Env = append(os.Environ(),
 		"PION_LOG_TRACE=all",
@@ -170,16 +176,8 @@ func (d *DeviceProcess) Stop() error {
 		return nil
 	}
 
-	// Cancel context
+	// Cancel context; this sends SIGTERM to the process group.
 	d.cancelFunc()
-
-	// Send SIGTERM
-	if d.cmd != nil && d.cmd.Process != nil {
-		if err := d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			// If SIGTERM fails, try SIGKILL
-			d.cmd.Process.Kill()
-		}
-	}
 
 	// Wait for process to exit (with timeout)
 	select {
@@ -188,8 +186,9 @@ func (d *DeviceProcess) Stop() error {
 	case <-time.After(5 * time.Second):
 		// Force kill
 		if d.cmd != nil && d.cmd.Process != nil {
-			d.cmd.Process.Kill()
+			signalProcessGroup(d.cmd, syscall.SIGKILL)
 		}
+		<-d.done
 	}
 
 	// Close log file if open
