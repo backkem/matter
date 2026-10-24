@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/backkem/matter/pkg/fabric"
-	"github.com/grandcat/zeroconf"
 	"github.com/pion/logging"
 )
 
@@ -23,17 +22,40 @@ type MDNSServer interface {
 	Shutdown()
 }
 
+// ServiceRegistration describes a DNS-SD service instance to advertise.
+type ServiceRegistration struct {
+	// Instance is the service instance name (e.g., "DD200C20D25AE5F7").
+	Instance string
+
+	// Service is the service type (e.g., "_matterc._udp").
+	Service string
+
+	// Subtypes are the DNS-SD subtypes the instance is also advertised under
+	// (e.g., "_L840"). Spec Section 4.3.1.
+	Subtypes []string
+
+	// Domain is the DNS-SD domain (e.g., "local.").
+	Domain string
+
+	// HostName is the target host name for the SRV record.
+	// If empty, the factory picks one.
+	HostName string
+
+	// Port is the service port.
+	Port int
+
+	// Text contains the TXT record "key=value" strings.
+	Text []string
+
+	// Interfaces restricts advertising to these interfaces.
+	// If nil, all interfaces are used.
+	Interfaces []net.Interface
+}
+
 // MDNSServerFactory creates MDNSServer instances.
 type MDNSServerFactory interface {
 	// Register creates a new mDNS server for the given service.
-	Register(instance, service, domain string, port int, txt []string, ifaces []net.Interface) (MDNSServer, error)
-}
-
-// zeroconfServerFactory is the production implementation using grandcat/zeroconf.
-type zeroconfServerFactory struct{}
-
-func (z *zeroconfServerFactory) Register(instance, service, domain string, port int, txt []string, ifaces []net.Interface) (MDNSServer, error) {
-	return zeroconf.Register(instance, service, domain, port, txt, ifaces)
+	Register(reg ServiceRegistration) (MDNSServer, error)
 }
 
 // activeService tracks an active DNS-SD service registration.
@@ -57,7 +79,7 @@ type AdvertiserConfig struct {
 	Interfaces []net.Interface
 
 	// ServerFactory is the factory for creating mDNS servers.
-	// If nil, the default zeroconf factory is used.
+	// If nil, the default pion/mdns factory is used.
 	ServerFactory MDNSServerFactory
 
 	// LoggerFactory for creating loggers.
@@ -82,7 +104,7 @@ func NewAdvertiser(config AdvertiserConfig) (*Advertiser, error) {
 
 	factory := config.ServerFactory
 	if factory == nil {
-		factory = &zeroconfServerFactory{}
+		factory = &pionServerFactory{loggerFactory: config.LoggerFactory}
 	}
 
 	a := &Advertiser{
@@ -144,14 +166,7 @@ func (a *Advertiser) StartCommissionable(txt CommissionableTXT) error {
 		subtypes = append(subtypes, fmt.Sprintf("_T%d", txt.DeviceType))
 	}
 
-	// Build service string with subtypes
-	// grandcat/zeroconf@master properly parses comma-separated subtypes
-	// and creates the correct DNS-SD PTR records (_S15._sub._matterc._udp.local.)
 	service := ServiceCommissionable
-	for _, st := range subtypes {
-		service += "," + st
-	}
-
 	txtRecords := txt.Encode()
 	if a.log != nil {
 		a.log.Debugf("Registering mDNS service: instance=%s service=%s domain=%s port=%d subtypes=%v",
@@ -159,14 +174,7 @@ func (a *Advertiser) StartCommissionable(txt CommissionableTXT) error {
 		a.log.Tracef("TXT records: %v", txtRecords)
 	}
 
-	server, err := a.factory.Register(
-		instanceName,
-		service,
-		DefaultDomain,
-		a.config.Port,
-		txtRecords,
-		a.config.Interfaces,
-	)
+	server, err := a.factory.Register(a.registration(instanceName, service, subtypes, txtRecords))
 	if err != nil {
 		return fmt.Errorf("advertiser: mDNS registration failed for %s: %w", service, err)
 	}
@@ -201,14 +209,7 @@ func (a *Advertiser) StartOperational(compressedFabricID [8]byte, nodeID fabric.
 
 	instanceName := OperationalInstanceName(compressedFabricID, nodeID)
 
-	server, err := a.factory.Register(
-		instanceName,
-		ServiceOperational,
-		DefaultDomain,
-		a.config.Port,
-		txt.Encode(),
-		a.config.Interfaces,
-	)
+	server, err := a.factory.Register(a.registration(instanceName, ServiceOperational, nil, txt.Encode()))
 	if err != nil {
 		return err
 	}
@@ -258,20 +259,7 @@ func (a *Advertiser) StartCommissioner(txt CommissionerTXT) error {
 		subtypes = append(subtypes, fmt.Sprintf("_T%d", txt.DeviceType))
 	}
 
-	// Build service string with subtypes
-	service := ServiceCommissioner
-	for _, st := range subtypes {
-		service += "," + st + "._sub." + ServiceCommissioner
-	}
-
-	server, err := a.factory.Register(
-		instanceName,
-		service,
-		DefaultDomain,
-		a.config.Port,
-		txt.Encode(),
-		a.config.Interfaces,
-	)
+	server, err := a.factory.Register(a.registration(instanceName, ServiceCommissioner, subtypes, txt.Encode()))
 	if err != nil {
 		return err
 	}
@@ -283,6 +271,20 @@ func (a *Advertiser) StartCommissioner(txt CommissionerTXT) error {
 	}
 
 	return nil
+}
+
+// registration builds a ServiceRegistration using the advertiser's config.
+func (a *Advertiser) registration(instance, service string, subtypes, txt []string) ServiceRegistration {
+	return ServiceRegistration{
+		Instance:   instance,
+		Service:    service,
+		Subtypes:   subtypes,
+		Domain:     DefaultDomain,
+		HostName:   a.config.HostName,
+		Port:       a.config.Port,
+		Text:       txt,
+		Interfaces: a.config.Interfaces,
+	}
 }
 
 // Stop stops advertising a specific service type.

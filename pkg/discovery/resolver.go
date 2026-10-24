@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/backkem/matter/pkg/fabric"
-	"github.com/grandcat/zeroconf"
 )
 
 // DefaultBrowseTimeout is the default timeout for browse operations.
@@ -55,41 +54,49 @@ func (r *ResolvedService) IPv4Addresses() []net.IP {
 	return FilterIPv4(r.IPs)
 }
 
+// ServiceEntry is a DNS-SD service instance reported by an MDNSResolver.
+type ServiceEntry struct {
+	// Instance is the service instance name.
+	Instance string
+
+	// Service is the service type (e.g., "_matterc._udp"), never a subtype.
+	Service string
+
+	// Domain is the DNS-SD domain.
+	Domain string
+
+	// HostName is the SRV target host name.
+	HostName string
+
+	// Port is the SRV port.
+	Port int
+
+	// Text contains the TXT record "key=value" strings.
+	Text []string
+
+	// AddrIPv4 and AddrIPv6 contain the resolved host addresses.
+	AddrIPv4 []net.IP
+	AddrIPv6 []net.IP
+}
+
 // MDNSResolver is the interface for mDNS service resolution.
 // This allows for dependency injection in tests.
+//
+// Implementations send entries until ctx is done and then return; the caller
+// owns and closes the entries channel.
 type MDNSResolver interface {
-	// Browse browses for services of the given type.
-	Browse(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error
+	// Browse browses for services of the given type. The service may be a
+	// subtype browse name of the form "<subtype>._sub.<service>".
+	Browse(ctx context.Context, service, domain string, entries chan<- *ServiceEntry) error
 
 	// Lookup looks up a specific service instance.
-	Lookup(ctx context.Context, instance, service, domain string, entries chan<- *zeroconf.ServiceEntry) error
-}
-
-// zeroconfResolver is the production implementation using grandcat/zeroconf.
-type zeroconfResolver struct {
-	resolver *zeroconf.Resolver
-}
-
-func newZeroconfResolver() (*zeroconfResolver, error) {
-	r, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		return nil, err
-	}
-	return &zeroconfResolver{resolver: r}, nil
-}
-
-func (z *zeroconfResolver) Browse(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
-	return z.resolver.Browse(ctx, service, domain, entries)
-}
-
-func (z *zeroconfResolver) Lookup(ctx context.Context, instance, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
-	return z.resolver.Lookup(ctx, instance, service, domain, entries)
+	Lookup(ctx context.Context, instance, service, domain string, entries chan<- *ServiceEntry) error
 }
 
 // ResolverConfig holds configuration for the Resolver.
 type ResolverConfig struct {
 	// MDNSResolver is the underlying mDNS resolver implementation.
-	// If nil, the default zeroconf resolver is used.
+	// If nil, the default pion/mdns resolver is used.
 	MDNSResolver MDNSResolver
 
 	// BrowseTimeout is the timeout for browse operations.
@@ -111,11 +118,7 @@ type Resolver struct {
 func NewResolver(config ResolverConfig) (*Resolver, error) {
 	resolver := config.MDNSResolver
 	if resolver == nil {
-		zr, err := newZeroconfResolver()
-		if err != nil {
-			return nil, err
-		}
-		resolver = zr
+		resolver = newPionResolver(nil)
 	}
 
 	if config.BrowseTimeout == 0 {
@@ -170,17 +173,18 @@ func (r *Resolver) BrowseCommissioner(ctx context.Context) (<-chan ResolvedServi
 // browse performs a generic browse operation.
 func (r *Resolver) browse(ctx context.Context, serviceType ServiceType, service string) (<-chan ResolvedService, error) {
 	results := make(chan ResolvedService)
-	entries := make(chan *zeroconf.ServiceEntry)
+	entries := make(chan *ServiceEntry)
 
-	// Apply browse timeout if context doesn't have a deadline
+	// Apply browse timeout if context doesn't have a deadline. The cancel
+	// runs when the browse goroutine finishes, not when browse returns.
+	cancel := context.CancelFunc(func() {})
 	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.config.BrowseTimeout)
-		defer cancel()
 	}
 
 	// Start browsing in a goroutine
 	go func() {
+		defer cancel()
 		defer close(results)
 
 		// Start the browse
@@ -229,7 +233,7 @@ func (r *Resolver) Lookup(ctx context.Context, serviceType ServiceType, instance
 		defer cancel()
 	}
 
-	entries := make(chan *zeroconf.ServiceEntry)
+	entries := make(chan *ServiceEntry)
 
 	// Start lookup in a goroutine
 	go func() {
@@ -253,8 +257,8 @@ func (r *Resolver) Lookup(ctx context.Context, serviceType ServiceType, instance
 	}
 }
 
-// entryToResolvedService converts a zeroconf.ServiceEntry to ResolvedService.
-func entryToResolvedService(entry *zeroconf.ServiceEntry, serviceType ServiceType) ResolvedService {
+// entryToResolvedService converts a ServiceEntry to ResolvedService.
+func entryToResolvedService(entry *ServiceEntry, serviceType ServiceType) ResolvedService {
 	// Combine IPv4 and IPv6 addresses
 	var allIPs []net.IP
 	for _, ip := range entry.AddrIPv6 {

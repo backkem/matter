@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"errors"
-	"net"
 	"sync"
 	"testing"
 
@@ -25,6 +24,7 @@ type mockMDNSServerFactory struct {
 	lastArgs struct {
 		instance string
 		service  string
+		subtypes []string
 		domain   string
 		port     int
 		txt      []string
@@ -36,7 +36,7 @@ func newMockMDNSServerFactory() *mockMDNSServerFactory {
 	return &mockMDNSServerFactory{}
 }
 
-func (f *mockMDNSServerFactory) Register(instance, service, domain string, port int, txt []string, ifaces []net.Interface) (MDNSServer, error) {
+func (f *mockMDNSServerFactory) Register(reg ServiceRegistration) (MDNSServer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -44,11 +44,12 @@ func (f *mockMDNSServerFactory) Register(instance, service, domain string, port 
 		return nil, ErrClosed
 	}
 
-	f.lastArgs.instance = instance
-	f.lastArgs.service = service
-	f.lastArgs.domain = domain
-	f.lastArgs.port = port
-	f.lastArgs.txt = txt
+	f.lastArgs.instance = reg.Instance
+	f.lastArgs.service = reg.Service
+	f.lastArgs.subtypes = reg.Subtypes
+	f.lastArgs.domain = reg.Domain
+	f.lastArgs.port = reg.Port
+	f.lastArgs.txt = reg.Text
 
 	server := &mockMDNSServer{}
 	f.servers = append(f.servers, server)

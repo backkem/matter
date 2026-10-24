@@ -4,26 +4,24 @@ import (
 	"context"
 	"net"
 	"sync"
-
-	"github.com/grandcat/zeroconf"
 )
 
 // MockMDNSResolver provides a mock mDNS resolver for testing without real network I/O.
 // It allows registering services and simulating discovery responses.
 type MockMDNSResolver struct {
 	mu       sync.RWMutex
-	services map[string][]*zeroconf.ServiceEntry
+	services map[string][]*ServiceEntry
 }
 
 // NewMockMDNSResolver creates a new mock resolver.
 func NewMockMDNSResolver() *MockMDNSResolver {
 	return &MockMDNSResolver{
-		services: make(map[string][]*zeroconf.ServiceEntry),
+		services: make(map[string][]*ServiceEntry),
 	}
 }
 
 // RegisterService registers a service that will be returned by Browse/Lookup.
-func (m *MockMDNSResolver) RegisterService(service string, entry *zeroconf.ServiceEntry) {
+func (m *MockMDNSResolver) RegisterService(service string, entry *ServiceEntry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.services[service] = append(m.services[service], entry)
@@ -33,13 +31,13 @@ func (m *MockMDNSResolver) RegisterService(service string, entry *zeroconf.Servi
 func (m *MockMDNSResolver) ClearServices() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.services = make(map[string][]*zeroconf.ServiceEntry)
+	m.services = make(map[string][]*ServiceEntry)
 }
 
 // Browse implements MDNSResolver.
-func (m *MockMDNSResolver) Browse(ctx context.Context, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
+func (m *MockMDNSResolver) Browse(ctx context.Context, service, domain string, entries chan<- *ServiceEntry) error {
 	m.mu.RLock()
-	svcEntries := make([]*zeroconf.ServiceEntry, len(m.services[service]))
+	svcEntries := make([]*ServiceEntry, len(m.services[service]))
 	copy(svcEntries, m.services[service])
 	m.mu.RUnlock()
 
@@ -57,9 +55,9 @@ func (m *MockMDNSResolver) Browse(ctx context.Context, service, domain string, e
 }
 
 // Lookup implements MDNSResolver.
-func (m *MockMDNSResolver) Lookup(ctx context.Context, instance, service, domain string, entries chan<- *zeroconf.ServiceEntry) error {
+func (m *MockMDNSResolver) Lookup(ctx context.Context, instance, service, domain string, entries chan<- *ServiceEntry) error {
 	m.mu.RLock()
-	svcEntries := make([]*zeroconf.ServiceEntry, len(m.services[service]))
+	svcEntries := make([]*ServiceEntry, len(m.services[service]))
 	copy(svcEntries, m.services[service])
 	m.mu.RUnlock()
 
@@ -79,13 +77,11 @@ func (m *MockMDNSResolver) Lookup(ctx context.Context, instance, service, domain
 }
 
 // MockCommissionableService creates a mock commissionable service entry for testing.
-func MockCommissionableService(instanceName string, port int, ip net.IP, discriminator uint16) *zeroconf.ServiceEntry {
-	return &zeroconf.ServiceEntry{
-		ServiceRecord: zeroconf.ServiceRecord{
-			Instance: instanceName,
-			Service:  ServiceCommissionable,
-			Domain:   DefaultDomain,
-		},
+func MockCommissionableService(instanceName string, port int, ip net.IP, discriminator uint16) *ServiceEntry {
+	return &ServiceEntry{
+		Instance: instanceName,
+		Service:  ServiceCommissionable,
+		Domain:   DefaultDomain,
 		HostName: instanceName + ".local.",
 		Port:     port,
 		AddrIPv4: []net.IP{ip},
@@ -98,14 +94,12 @@ func MockCommissionableService(instanceName string, port int, ip net.IP, discrim
 }
 
 // MockOperationalService creates a mock operational service entry for testing.
-func MockOperationalService(compressedFabricID [8]byte, nodeID uint64, port int, ip net.IP) *zeroconf.ServiceEntry {
+func MockOperationalService(compressedFabricID [8]byte, nodeID uint64, port int, ip net.IP) *ServiceEntry {
 	instanceName := OperationalInstanceNameFromBytes(compressedFabricID[:], nodeID)
-	return &zeroconf.ServiceEntry{
-		ServiceRecord: zeroconf.ServiceRecord{
-			Instance: instanceName,
-			Service:  ServiceOperational,
-			Domain:   DefaultDomain,
-		},
+	return &ServiceEntry{
+		Instance: instanceName,
+		Service:  ServiceOperational,
+		Domain:   DefaultDomain,
 		HostName: instanceName + ".local.",
 		Port:     port,
 		AddrIPv4: []net.IP{ip},
